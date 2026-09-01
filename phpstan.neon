@@ -1,0 +1,10 @@
+parameters:
+    level: 6
+    paths:
+        - src
+    excludePaths:
+        - src/Console
+    ignoreErrors:
+        - '#Unsafe usage of new static#'
+    checkMissingIterableValueType: false
+    checkGenericClassInNonGenericObjectType: false
