@@ -1,5 +1,5 @@
 {
-    "name": "abdulbaset/activity-tracker",
+    "name": "abdulbaset/laravel-activity-tracker",
     "description": "Automatic, zero-code database activity/audit tracker for Laravel applications.",
     "keywords": ["laravel", "audit", "activity", "tracker", "logging", "eloquent"],
     "license": "MIT",
