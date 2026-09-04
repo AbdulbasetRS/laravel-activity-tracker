@@ -32,7 +32,7 @@ final class TrackingContext
      * Counts of "an authoritative Eloquent lifecycle event is about to issue
      * a SQL statement of this shape for this table" pushed by the observer's
      * pre-hooks (creating/updating/deleting/restoring/forceDeleting) and
-     * consumed by the DatabaseQueryListener. When a matching query is
+     * consumed by the ActivityTrackerQueryListener. When a matching query is
      * consumed, the query listener skips it entirely because the paired
      * post-hook (created/updated/deleted/...) already logs the richer,
      * authoritative activity. This is the correlation mechanism that keeps
@@ -49,7 +49,7 @@ final class TrackingContext
      * than logging every retrieval immediately (which would create one
      * activity per row for a 10,000-row collection), retrievals accumulate
      * here and are flushed once at the end of the request/job/command via
-     * RetrievalFlusher. A final count of 1 becomes a "retrieved" activity;
+     * ActivityTrackerRetrievalFlusher. A final count of 1 becomes a "retrieved" activity;
      * more than 1 becomes a single "retrieved_many" activity.
      *
      * @var array<class-string, array{count: int, ids: array<int, mixed>}>
@@ -74,6 +74,94 @@ final class TrackingContext
     public function isInQueueJob(): bool
     {
         return $this->inQueueJob;
+    }
+
+    /**
+     * @var array{job_name: string|null, queue_name: string|null, queue_connection: string|null, queue_attempt: int|null}
+     */
+    private array $jobContext = [
+        'job_name' => null,
+        'queue_name' => null,
+        'queue_connection' => null,
+        'queue_attempt' => null,
+    ];
+
+    public function setJobContext(?string $jobName, ?string $queueName, ?string $queueConnection, ?int $attempt): void
+    {
+        $this->jobContext = [
+            'job_name' => $jobName,
+            'queue_name' => $queueName,
+            'queue_connection' => $queueConnection,
+            'queue_attempt' => $attempt,
+        ];
+    }
+
+    /**
+     * @return array{job_name: string|null, queue_name: string|null, queue_connection: string|null, queue_attempt: int|null}
+     */
+    public function jobContext(): array
+    {
+        return $this->jobContext;
+    }
+
+    /**
+     * High-resolution timers for measuring a tracked operation's own
+     * duration (e.g. between an Eloquent "creating" hook and its matching
+     * "created" hook) — never the whole HTTP request. Keyed by an arbitrary
+     * integer the caller controls (typically spl_object_id($model)), so
+     * concurrent operations on different model instances never collide.
+     *
+     * @var array<int, int> key => hrtime(true) nanoseconds at start
+     */
+    private array $timers = [];
+
+    public function startTimer(int $key): void
+    {
+        $this->timers[$key] = hrtime(true);
+    }
+
+    /**
+     * Stops and removes the timer, returning the elapsed time in
+     * milliseconds (3 decimal places), or null if no timer was started for
+     * this key (e.g. the corresponding pre-hook never fired).
+     */
+    public function stopTimer(int $key): ?float
+    {
+        if (! isset($this->timers[$key])) {
+            return null;
+        }
+
+        $elapsedNanoseconds = hrtime(true) - $this->timers[$key];
+        unset($this->timers[$key]);
+
+        return round($elapsedNanoseconds / 1_000_000, 3);
+    }
+
+    /**
+     * Exception-instance dedup: Laravel can, in rare edge cases, call the
+     * handler's report() more than once for the very same exception object
+     * (e.g. an application catching and manually re-reporting). Keyed by
+     * spl_object_id($exception), which is stable for the object's lifetime
+     * and needs no hashing of message/trace content.
+     *
+     * @var array<int, true>
+     */
+    private array $reportedExceptions = [];
+
+    /**
+     * Returns true if this is the first time this exact exception instance
+     * has been claimed (and marks it claimed); false on any subsequent call
+     * for the same instance.
+     */
+    public function claimException(int $objectId): bool
+    {
+        if (isset($this->reportedExceptions[$objectId])) {
+            return false;
+        }
+
+        $this->reportedExceptions[$objectId] = true;
+
+        return true;
     }
 
     public function isSuppressed(): bool
@@ -103,6 +191,17 @@ final class TrackingContext
     public function requestId(): string
     {
         return $this->requestId ??= (string) Str::uuid();
+    }
+
+    /**
+     * True if requestId() has already been called during this request/job —
+     * lets callers (like the status-backfill middleware) avoid generating a
+     * request ID, and therefore avoid a wasted query, for a request that
+     * never actually tracked anything.
+     */
+    public function hasRequestId(): bool
+    {
+        return $this->requestId !== null;
     }
 
     public function expectQuery(string $type, string $table): void
@@ -177,5 +276,7 @@ final class TrackingContext
         $this->requestId = null;
         $this->expectedQueryCounts = [];
         $this->retrievalBuffer = [];
+        $this->timers = [];
+        $this->reportedExceptions = [];
     }
 }

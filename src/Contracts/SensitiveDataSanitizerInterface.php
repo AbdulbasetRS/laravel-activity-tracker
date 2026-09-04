@@ -22,4 +22,13 @@ interface SensitiveDataSanitizerInterface
      * @return array<int, mixed>
      */
     public function sanitizeBindings(array $bindings): array;
+
+    /**
+     * Redact configured sensitive query-string parameters from a URL,
+     * preserving the rest of the URL and the parameter names themselves —
+     * only the value is replaced. Malformed URLs are returned unchanged
+     * (never throws) since this handles untrusted input (e.g. the Referer
+     * header).
+     */
+    public function sanitizeUrl(string $url): string;
 }

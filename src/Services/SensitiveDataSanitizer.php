@@ -57,6 +57,53 @@ final class SensitiveDataSanitizer implements SensitiveDataSanitizerInterface
         }, $bindings);
     }
 
+    public function sanitizeUrl(string $url): string
+    {
+        $parts = parse_url($url);
+
+        if ($parts === false || ! isset($parts['query']) || $parts['query'] === '') {
+            return $url;
+        }
+
+        parse_str($parts['query'], $params);
+
+        if ($params === []) {
+            return $url;
+        }
+
+        $sensitiveParams = array_map('strtolower', (array) config('activity-tracker.sensitive_query_parameters', []));
+        $redacted = false;
+
+        foreach (array_keys($params) as $key) {
+            if (in_array(strtolower((string) $key), $sensitiveParams, true)) {
+                $params[$key] = '[REDACTED]';
+                $redacted = true;
+            }
+        }
+
+        if (! $redacted) {
+            return $url;
+        }
+
+        $rebuilt = '';
+        if (isset($parts['scheme'])) {
+            $rebuilt .= $parts['scheme'].'://';
+        }
+        if (isset($parts['host'])) {
+            $rebuilt .= $parts['host'];
+        }
+        if (isset($parts['port'])) {
+            $rebuilt .= ':'.$parts['port'];
+        }
+        $rebuilt .= $parts['path'] ?? '';
+        $rebuilt .= '?'.http_build_query($params);
+        if (isset($parts['fragment'])) {
+            $rebuilt .= '#'.$parts['fragment'];
+        }
+
+        return $rebuilt;
+    }
+
     private function isSensitiveKey(string $key): bool
     {
         $normalized = strtolower($key);

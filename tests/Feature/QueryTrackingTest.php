@@ -11,25 +11,51 @@ use Illuminate\Support\Facades\DB;
 
 final class QueryTrackingTest extends TestCase
 {
-    public function test_count_is_tracked_via_the_query_listener(): void
+    /**
+     * Regression test: "count" and "exists" must NEVER produce an Activity,
+     * under any config, not merely be hidden from the UI. See README §
+     * Tracked operations.
+     */
+    public function test_count_is_never_tracked(): void
     {
         TestPost::create(['title' => 'A']);
         TestPost::create(['title' => 'B']);
         Activity::query()->truncate();
 
         TestPost::query()->count();
+        TestPost::query()->where('title', 'A')->count();
+        DB::table('test_posts')->count();
 
-        $this->assertSame(1, Activity::query()->where('action', 'count')->count());
+        $this->assertSame(0, Activity::query()->where('action', 'count')->count());
+        $this->assertSame(0, Activity::query()->count());
     }
 
-    public function test_exists_is_tracked_via_the_query_listener(): void
+    public function test_exists_is_never_tracked(): void
     {
         TestPost::create(['title' => 'A']);
         Activity::query()->truncate();
 
         TestPost::query()->where('title', 'A')->exists();
+        DB::table('test_posts')->where('title', 'A')->exists();
 
-        $this->assertSame(1, Activity::query()->where('action', 'exists')->count());
+        $this->assertSame(0, Activity::query()->where('action', 'exists')->count());
+        $this->assertSame(0, Activity::query()->count());
+    }
+
+    public function test_count_and_exists_stay_untracked_even_if_reenabled_in_config(): void
+    {
+        // "count"/"exists" have no config toggle at all anymore — confirm
+        // there is no backdoor via the generic 'track' array.
+        config()->set('activity-tracker.track.count', true);
+        config()->set('activity-tracker.track.exists', true);
+
+        TestPost::create(['title' => 'A']);
+        Activity::query()->truncate();
+
+        TestPost::query()->count();
+        TestPost::query()->exists();
+
+        $this->assertSame(0, Activity::query()->count());
     }
 
     public function test_aggregates_are_tracked(): void

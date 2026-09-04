@@ -1,11 +1,16 @@
 @php
+    use Abdulbaset\ActivityTracker\Support\DurationFormatter;
+
     $isUpdate = $activity->action === 'updated' || ($activity->action === 'restored' && $activity->changed_values);
     $isCreated = $activity->action === 'created';
     $isDeleted = in_array($activity->action, ['deleted', 'force_deleted'], true);
     $isRetrieval = in_array($activity->action, ['retrieved', 'retrieved_many'], true);
-    $isAggregate = in_array($activity->action, ['count', 'exists', 'sum', 'avg', 'min', 'max'], true);
+    $isAggregate = in_array($activity->action, ['sum', 'avg', 'min', 'max'], true);
     $isBulk = in_array($activity->action, ['bulk_updated', 'bulk_deleted', 'raw_insert'], true);
-    $executionContext = $activity->metadata['execution_context'] ?? null;
+    $isException = $activity->isException();
+    $executionContext = $activity->execution_context ?? $activity->metadata['execution_context'] ?? null;
+    $duration = DurationFormatter::format($activity->duration_ms);
+    $durationClass = DurationFormatter::classify($activity->duration_ms);
 @endphp
 <x-activity-tracker::layout title="Activity #{{ $activity->id }}">
     <div style="margin-bottom:16px;">
@@ -26,9 +31,43 @@
                 @if ($executionContext && $executionContext !== 'http')
                     <div>Execution context: {{ strtoupper($executionContext) }}</div>
                 @endif
+                @if ($duration)
+                    <div class="at-duration at-duration-{{ $durationClass }}">{{ $duration }}</div>
+                @endif
             </div>
         </div>
     </x-activity-tracker::card>
+
+    @if ($isException)
+        <x-activity-tracker::card header="Exception" class="at-mt-16">
+            <div class="at-meta-grid">
+                <x-activity-tracker::meta-item label="Class" :value="$activity->exception_class" />
+                <x-activity-tracker::meta-item label="HTTP status" :value="$activity->http_status" />
+                <x-activity-tracker::meta-item label="File" :value="$activity->exception_file ? basename($activity->exception_file).':'.$activity->exception_line : null" />
+                <x-activity-tracker::meta-item label="Execution context" :value="$executionContext ? strtoupper($executionContext) : null" />
+            </div>
+            <div class="at-meta-item" style="margin-top:10px;">
+                <div class="at-meta-label">Message</div>
+                <div class="at-meta-value">{{ $activity->exception_message ?? '—' }}</div>
+            </div>
+            @if ($activity->stack_trace)
+                <div style="margin-top:14px;">
+                    <div class="at-collapsible-toggle" data-at-collapsible-toggle="at-stack-trace-body" role="button" tabindex="0" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>
+                        Stack trace
+                    </div>
+                    <div id="at-stack-trace-body" class="at-collapsible-body">
+                        <div class="at-json-viewer" data-at-json="{{ json_encode($activity->stack_trace) }}" style="position:relative;">
+                            <button type="button" class="at-btn at-btn-icon at-json-copy" data-at-json-copy aria-label="Copy stack trace">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="1"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+                            </button>
+                            <pre class="at-stack-trace">{{ $activity->stack_trace }}</pre>
+                        </div>
+                    </div>
+                </div>
+            @endif
+        </x-activity-tracker::card>
+    @endif
 
     <div class="at-grid-2" style="margin-top:16px;">
         <x-activity-tracker::card header="Subject">
@@ -129,6 +168,8 @@
             <div class="at-meta-grid" style="margin-bottom:12px;">
                 <x-activity-tracker::meta-item label="Query type" :value="$activity->query_type ? strtoupper($activity->query_type) : null" />
                 <x-activity-tracker::meta-item label="Result count" :value="$activity->result_count" />
+                <x-activity-tracker::meta-item label="Duration" :value="$duration" />
+                <x-activity-tracker::meta-item label="Connection" :value="$activity->database_connection" />
             </div>
             <div class="at-json-viewer">
                 <pre style="white-space:pre-wrap;">{{ $activity->query }}</pre>
@@ -137,18 +178,24 @@
     @endif
 
     <div class="at-grid-2" style="margin-top:16px;">
-        <x-activity-tracker::card header="Request information">
-            @if ($activity->http_method || $activity->url)
+        <x-activity-tracker::card header="Request">
+            @if ($activity->url || $activity->http_method)
                 <div class="at-meta-grid">
                     <x-activity-tracker::meta-item label="HTTP method" :value="$activity->http_method" />
-                    <x-activity-tracker::meta-item label="Route name" :value="$activity->route_name" />
+                    <x-activity-tracker::meta-item label="HTTP status" :value="$activity->http_status" />
+                    <x-activity-tracker::meta-item label="Route (secondary)" :value="$activity->route_name" />
                     <x-activity-tracker::meta-item label="IP address" :value="$activity->ip_address" />
-                    <x-activity-tracker::meta-item label="Request ID" :value="$activity->request_id" />
                 </div>
                 @if ($activity->url)
                     <div class="at-meta-item" style="margin-top:10px;">
-                        <div class="at-meta-label">URL</div>
+                        <div class="at-meta-label">URL (primary location)</div>
                         <div class="at-meta-value" style="word-break:break-all;">{{ $activity->url }}</div>
+                    </div>
+                @endif
+                @if ($activity->referrer_url)
+                    <div class="at-meta-item" style="margin-top:10px;">
+                        <div class="at-meta-label">Referrer</div>
+                        <div class="at-meta-value" style="word-break:break-all;">{{ $activity->referrer_url }}</div>
                     </div>
                 @endif
                 @if ($activity->user_agent)
@@ -157,11 +204,16 @@
                         <div class="at-meta-value" style="word-break:break-all;">{{ $activity->user_agent }}</div>
                     </div>
                 @endif
+            @elseif ($activity->command)
+                <p class="at-text-muted">Execution context: CLI</p>
+                <x-activity-tracker::meta-item label="Command" :value="$activity->command" />
             @else
                 <p class="at-text-muted">Execution context: {{ strtoupper($executionContext ?? 'cli') }}. No HTTP request was involved.</p>
-                @if ($activity->request_id)
+            @endif
+            @if ($activity->request_id)
+                <div class="at-meta-item" style="margin-top:10px;">
                     <x-activity-tracker::meta-item label="Request ID" :value="$activity->request_id" />
-                @endif
+                </div>
             @endif
         </x-activity-tracker::card>
 

@@ -40,4 +40,11 @@ interface ActivityTransformerInterface
      * @return array<string, mixed>
      */
     public function attributesFor(Model $model): array;
+
+    /**
+     * Build a normalized activity payload for a captured exception.
+     *
+     * @return array<string, mixed>
+     */
+    public function fromException(\Throwable $exception): array;
 }

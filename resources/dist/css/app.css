@@ -1,5 +1,5 @@
 /* Activity Tracker Dashboard — package-provided styles.
-   Served automatically by AssetController; publish with
+   Served automatically by ActivityTrackerAssetController; publish with
    `php artisan vendor:publish --tag=activity-tracker-assets` to override. */
 
 :root {
@@ -254,12 +254,34 @@ html[data-at-theme='dark'] {
   border: 1px solid var(--at-border);
   border-radius: var(--at-radius);
   background: var(--at-surface);
-  padding: 16px;
+  padding: 0 16px;
   margin-bottom: 16px;
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height .2s ease, opacity .15s ease, padding .2s ease, margin .2s ease;
 }
 
-.at-filter-panel.is-open { display: block; }
+.at-filter-panel.is-open {
+  max-height: 640px;
+  opacity: 1;
+  padding: 16px;
+}
+
+.at-filter-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--at-accent);
+  color: var(--at-accent-contrast);
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .at-filter-actions { display: flex; gap: 8px; margin-top: 12px; }
 
 .at-checkbox-list { display: flex; flex-wrap: wrap; gap: 8px; max-height: 160px; overflow-y: auto; padding: 8px; border: 1px solid var(--at-border); border-radius: var(--at-radius); }
@@ -348,3 +370,138 @@ html[data-at-theme='dark'] {
   .at-content { padding: 16px; }
   .at-topbar { padding: 12px 16px; }
 }
+
+/* AJAX results container: loading / error states */
+[data-at-results] {
+  position: relative;
+  transition: opacity .12s ease;
+}
+
+[data-at-results].is-loading {
+  opacity: .55;
+  pointer-events: none;
+}
+
+.at-results-spinner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: var(--at-surface);
+  border: 1px solid var(--at-border);
+  box-shadow: var(--at-shadow);
+  font-size: 12px;
+  color: var(--at-text-muted);
+}
+
+.at-error-state {
+  text-align: center;
+  padding: 40px 20px;
+  border: 1px solid var(--at-border);
+  border-radius: var(--at-radius);
+  background: var(--at-surface);
+  color: var(--at-text-muted);
+}
+
+.at-error-state svg { width: 32px; height: 32px; margin-bottom: 10px; color: var(--at-danger); }
+.at-error-state h3 { color: var(--at-text); font-size: 14px; margin: 0 0 4px; }
+.at-error-state .at-btn { margin-top: 12px; }
+
+/* Row / table refresh animation */
+.at-row-enter { animation: at-row-fade-in .18s ease both; }
+@keyframes at-row-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+[data-at-results] { animation: at-fade-in .12s ease both; }
+@keyframes at-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Toasts (used for AJAX error notices) */
+.at-toast-stack {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.at-toast {
+  background: var(--at-surface);
+  border: 1px solid var(--at-border);
+  border-radius: var(--at-radius);
+  box-shadow: var(--at-shadow);
+  padding: 10px 14px;
+  font-size: 13px;
+  max-width: 320px;
+  animation: at-toast-in .15s ease both;
+}
+
+@keyframes at-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Reduced motion: keep functionality, drop the motion */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Observability additions: duration, URL truncation, exception rows */
+.at-truncate-cell {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.at-duration { font-variant-numeric: tabular-nums; font-weight: 600; }
+.at-duration-fast { color: var(--at-success); }
+.at-duration-normal { color: var(--at-text); }
+.at-duration-slow { color: var(--at-warning); }
+.at-duration-very_slow { color: var(--at-danger); }
+
+.at-row-exception td:first-child { box-shadow: inset 3px 0 0 var(--at-danger); }
+
+.at-stack-trace {
+  background: var(--at-code-bg);
+  border: 1px solid var(--at-border);
+  border-radius: var(--at-radius);
+  padding: 12px 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.at-collapsible-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--at-text-muted);
+  padding: 6px 0;
+}
+
+.at-collapsible-body { display: none; margin-top: 8px; }
+.at-collapsible-body.is-open { display: block; animation: at-fade-in .12s ease both; }
+.at-collapsible-toggle svg { transition: transform .15s ease; }
+.at-collapsible-toggle.is-open svg { transform: rotate(90deg); }

@@ -27,25 +27,30 @@ That's it. Tracking begins immediately.
 5. [Configuration](#configuration)
 6. [Database migration](#database-migration)
 7. [Tracked operations](#tracked-operations)
-8. [Retrieval tracking](#retrieval-tracking)
-9. [Bulk operations](#bulk-operations)
-10. [Query tracking](#query-tracking)
-11. [Sensitive data protection](#sensitive-data-protection)
-12. [Ignoring models](#ignoring-models)
-13. [Authentication / causer tracking](#authentication--causer-tracking)
-14. [Request metadata](#request-metadata)
-15. [Queue support](#queue-support)
-16. [Transactions](#transactions)
-17. [Reading activities](#reading-activities)
-18. [Admin dashboard](#admin-dashboard)
-19. [Events](#events)
-20. [Extending the package](#extending-the-package)
-21. [Performance considerations](#performance-considerations)
-22. [Limitations](#limitations)
-23. [Troubleshooting](#troubleshooting)
-24. [Testing](#testing)
-25. [Contributing](#contributing)
-26. [License](#license)
+8. [Retrieval strategy & internal reads](#retrieval-strategy--internal-reads)
+9. [Retrieval tracking](#retrieval-tracking)
+10. [Bulk operations](#bulk-operations)
+11. [Query tracking](#query-tracking)
+12. [Duration & performance](#duration--performance)
+13. [Full URL, path & referrer](#full-url-path--referrer)
+14. [Exception tracking](#exception-tracking)
+15. [Sensitive data protection](#sensitive-data-protection)
+16. [Ignoring models](#ignoring-models)
+17. [Authentication / causer tracking](#authentication--causer-tracking)
+18. [Request metadata](#request-metadata)
+19. [Queue support](#queue-support)
+20. [Transactions](#transactions)
+21. [Reading activities](#reading-activities)
+22. [Admin dashboard](#admin-dashboard)
+23. [Class naming conventions](#class-naming-conventions)
+24. [Events](#events)
+25. [Extending the package](#extending-the-package)
+26. [Performance considerations](#performance-considerations)
+27. [Limitations](#limitations)
+28. [Troubleshooting](#troubleshooting)
+29. [Testing](#testing)
+30. [Contributing](#contributing)
+31. [License](#license)
 
 ---
 
@@ -57,12 +62,18 @@ The package hooks into two layers of your application automatically:
   operations: created, updated (with a diff), deleted, restored,
   force-deleted, and retrieved.
 - **The database query listener** (`DB::listen`) for everything Eloquent
-  events cannot see: `count()`, `exists()`, `sum()`/`avg()`/`min()`/`max()`,
-  mass query-builder updates/deletes, and raw `DB::table()` operations.
+  events cannot see: `sum()`/`avg()`/`min()`/`max()`, mass query-builder
+  updates/deletes, and raw `DB::table()` operations.
+
+`count()` and `exists()` are deliberately **never** tracked — see
+[Tracked operations](#tracked-operations) for why.
 
 A correlation mechanism ensures a single logical operation — e.g.
 `$user->update([...])`, which issues both an Eloquent `updating`/`updated`
 pair and an `UPDATE` SQL statement — produces **one** activity, not several.
+The same principle extends to the package's own internal reads: rendering
+the dashboard itself is never mistaken for an application activity — see
+[Retrieval strategy & internal reads](#retrieval-strategy--internal-reads).
 
 ## Why it exists
 
@@ -71,11 +82,13 @@ to track, or to manually call a logging method. That works, but it means:
 
 - New models are silently untracked until someone remembers to add the trait.
 - Bulk/raw operations that bypass model events are invisible.
-- Aggregate reads (`count()`, `exists()`) are never captured at all.
+- A naive "track every Eloquent retrieval" approach produces enormous noise —
+  including from Laravel's own internals (see below).
 
 This package instead observes the framework's own event system, so coverage
 is automatic and consistent across the whole application, today and for
-every model added in the future.
+every model added in the future — while actively filtering out framework
+and package-internal noise rather than recording it blindly.
 
 ## Installation
 
@@ -139,13 +152,23 @@ The `activities` table stores:
 |---|---|
 | `batch_id` / `request_id` | Correlate activities from the same request/job |
 | `causer_type` / `causer_id` | Polymorphic — who did it |
-| `action` | `created`, `updated`, `deleted`, `restored`, `force_deleted`, `retrieved`, `retrieved_many`, `count`, `exists`, `sum`/`avg`/`min`/`max`, `bulk_updated`, `bulk_deleted`, `raw_insert` |
+| `action` | `created`, `updated`, `deleted`, `restored`, `force_deleted`, `retrieved`, `retrieved_many`, `sum`/`avg`/`min`/`max`, `bulk_updated`, `bulk_deleted`, `raw_insert`, `exception` |
 | `subject_type` / `subject_id` | Polymorphic — what it happened to |
 | `old_values` / `new_values` / `changed_values` | JSON diffs for updates |
-| `query` / `query_type` | Captured SQL for query-listener-sourced activities |
+| `query` / `query_type` / `database_connection` | Captured SQL for query-listener-sourced activities |
 | `result_count` | Row count, where derivable (see [Limitations](#limitations)) |
-| `ip_address`, `user_agent`, `route_name`, `http_method`, `url` | HTTP context, null outside HTTP |
+| `duration_ms` / `memory_usage` / `memory_peak` | See [Duration & performance](#duration--performance) |
+| `ip_address`, `user_agent`, `route_name`, `http_method`, `url`, `path`, `referrer_url`, `http_status` | HTTP context, null outside HTTP — see [Full URL, path & referrer](#full-url-path--referrer) |
+| `execution_context` | `http`, `cli`, or `queue` |
+| `command` | The Artisan command's signature name, in CLI context |
+| `job_name`, `queue_name`, `queue_connection`, `queue_attempt` | Captured automatically when tracking happens inside a queued job — see [Queue support](#queue-support) |
+| `exception_class`, `exception_message`, `exception_file`, `exception_line`, `stack_trace` | See [Exception tracking](#exception-tracking) |
 | `metadata` | Free-form JSON for anything else |
+
+Every column added after the initial release is nullable — upgrading and
+running the new migration never touches or invalidates existing rows; they
+simply have `null` for metadata that didn't exist yet when they were
+recorded.
 
 Publish and customize it if needed:
 
@@ -157,21 +180,105 @@ php artisan vendor:publish --tag=activity-tracker-migrations
 
 | Operation | Source | Action recorded |
 |---|---|---|
-| `Model::create()` | Eloquent event | `created` |
+| `Model::create()` | Eloquent event | `created` (with the created attributes) |
 | `$model->update()` / `save()` | Eloquent event | `updated` (with diff) |
-| `$model->delete()` | Eloquent event | `deleted` |
-| `$model->restore()` | Eloquent event | `restored` |
-| `$model->forceDelete()` | Eloquent event | `force_deleted` |
+| `$model->delete()` | Eloquent event | `deleted` (with the values at time of deletion) |
+| `$model->restore()` | Eloquent event | `restored` (with its diff) |
+| `$model->forceDelete()` | Eloquent event | `force_deleted` (with the values at time of deletion) |
 | `Model::find()` / `first()` / `firstWhere()` | Eloquent event (buffered) | `retrieved` |
 | `Model::get()` / `all()` / `cursor()` | Eloquent event (buffered) | `retrieved_many` |
-| `Model::count()` / `where(...)->count()` | Query listener | `count` |
-| `Model::exists()` | Query listener | `exists` |
 | `sum()` / `avg()` / `min()` / `max()` | Query listener | `sum` / `avg` / `min` / `max` |
 | `Model::where(...)->update([...])` | Query listener | `bulk_updated` |
 | `Model::where(...)->delete()` | Query listener | `bulk_deleted` |
 | `DB::table(...)->insert()/update()/delete()` | Query listener | `raw_insert` / `bulk_updated` / `bulk_deleted` |
+| Viewing a record's subject on the Activity Details page | Explicit, opt-in (`logIntentionalView()`) | `retrieved` (tagged `metadata.context = "ui"`) |
+| An unhandled/reported exception | Exception handler decorator | `exception` — see [Exception tracking](#exception-tracking) |
 
 Toggle any of these independently under `track` in the config file.
+
+### `count()` and `exists()` are never tracked
+
+Earlier versions tracked `count()` and `exists()` via the query listener.
+They have been **removed entirely** — not hidden from the UI, not disabled
+by default, genuinely removed from the tracking logic. Reasoning:
+
+- Laravel's `QueryExecuted` event never exposes the actual count/boolean
+  result (see [Limitations](#limitations)), so these activities could only
+  ever record "a count/exists query ran against this table", which carries
+  essentially no audit value on its own.
+- In practice they were among the highest-volume, lowest-signal activities
+  the package produced — most applications run far more `count()`/`exists()`
+  calls than meaningful writes.
+
+This is enforced as a hard rule in `ActivityTrackerManager`, independent of
+configuration — there is no toggle that brings them back.
+
+## Retrieval strategy & internal reads
+
+"Retrieved" tracking is the part of this package most likely to surprise you
+if left unmanaged, because Eloquent fires a `retrieved` event for **every**
+model hydration — including ones your application code never asked for.
+Two exclusions keep it meaningful:
+
+**1. Laravel's own auth resolution is excluded by default.** Every request
+through the `auth` middleware, every `Gate`/`can` check, and every call to
+`auth()->user()` resolves the current guard's user via a plain Eloquent
+query (`Illuminate\Auth\EloquentUserProvider::retrieveById()`). That is a
+framework mechanic that happens on nearly every authenticated page load in
+your entire application, not a meaningful business read — so any model
+configured under `auth.providers.*.model` (across all guards) is excluded
+from `retrieved`/`retrieved_many` tracking:
+
+```php
+'retrieval' => [
+    // ...
+    'exclude_auth_models' => true, // set false to audit login reads too
+],
+```
+
+**2. The dashboard's own reads are excluded.** Every controller the package
+ships wraps its internal queries — loading Activities for the table, a
+subject/causer for display, statistics aggregates — in
+`TrackingContext::withoutTracking()`:
+
+```php
+app(\Abdulbaset\ActivityTracker\Support\TrackingContext::class)->withoutTracking(function () {
+    // Anything tracked inside here is suppressed, then automatically
+    // restored afterward — even if the callback throws.
+    $user = User::find($id);
+});
+```
+
+This is nestable, exception-safe, and the exact mechanism the package uses
+internally to guarantee **opening `/activity-tracker` never creates activity
+noise for itself** (see [Admin dashboard](#admin-dashboard)). Use it in your
+own code for any read that shouldn't count as a business event.
+
+**3. Intentional UI views are a separate, explicit mechanism — never
+inferred from Eloquent hydration.** The Activity Details page calls:
+
+```php
+app(\Abdulbaset\ActivityTracker\Contracts\ActivityLoggerInterface::class)
+    ->logIntentionalView($subjectModel, ['via' => 'activity_details']);
+```
+
+exactly once per page view, recording a real `retrieved` activity tagged
+`metadata.context = "ui"`. This is deliberately decoupled from the automatic
+listener (which is suppressed for that same read via `withoutTracking()`
+above), so it can never duplicate it — and it is *not* subject to the
+auth-model exclusion, because a deliberate "an admin viewed this record
+through the audit UI" event is exactly the kind of thing worth auditing,
+even for a model that would otherwise be filtered as auth noise. Toggle it
+with `retrieval.track_ui_views`.
+
+**Honest limitation:** a blind Eloquent `retrieved` event carries no
+information about *why* the read happened. The two exclusions above cover
+the overwhelmingly common sources of noise (framework auth resolution and
+the package's own UI), but an application-level read that your own code
+performs for a reason you don't consider meaningful (e.g. a middleware you
+wrote, a policy check) will still be tracked like any other retrieval unless
+you wrap it in `withoutTracking()` yourself. There is no reliable, generic
+way to infer "was this read meaningful?" from the Eloquent event alone.
 
 ## Retrieval tracking
 
@@ -210,11 +317,15 @@ against the table, without loading the affected models into memory.
 
 ## Query tracking
 
-A dedicated `QueryClassifier` normalizes SQL (case, whitespace, quoting,
-identifier backticks) before classifying it as `select`, `insert`, `update`,
-`delete`, `count`, `exists`, `sum`, `avg`, `min`, `max`, or `unknown`. Plain
-`select` queries are **not** logged directly — they're already represented
-by `retrieved`/`retrieved_many`, and logging both would duplicate every read.
+A dedicated `ActivityTrackerQueryClassifier` normalizes SQL (case,
+whitespace, quoting, identifier backticks) before classifying it as
+`select`, `insert`, `update`, `delete`, `count`, `exists`, `sum`, `avg`,
+`min`, `max`, or `unknown`. Plain `select` queries are **not** logged
+directly — they're already represented by `retrieved`/`retrieved_many`, and
+logging both would duplicate every read. `count` and `exists` are
+classified (the information is genuinely there in the SQL shape) but are
+**never** turned into an activity — see
+[Tracked operations](#tracked-operations).
 
 The classifier is extensible without forking the package:
 
@@ -222,6 +333,158 @@ The classifier is extensible without forking the package:
 app(\Abdulbaset\ActivityTracker\Contracts\QueryClassifierInterface::class)
     ->extendPattern('/^explain/', 'diagnostic');
 ```
+
+## Duration & performance
+
+Every automatically-tracked activity records `duration_ms` — a high-resolution
+duration in milliseconds, measured as tightly as possible around the actual
+tracked operation, never the whole HTTP request:
+
+- **Create/update/delete/restore/force-delete**: measured with `hrtime(true)`
+  between the matching Eloquent pre-hook (`creating`/`updating`/`deleting`/
+  `restoring`) and post-hook — essentially the underlying database write.
+- **Aggregates, bulk updates/deletes, raw queries**: use Laravel's own
+  `QueryExecuted::$time` directly — it's already a precise millisecond
+  duration for that exact statement, so there's no need (or benefit) to
+  hand-roll a second timer.
+- **`retrieved`/`retrieved_many`**: intentionally `null`. A buffered
+  collection retrieval has no single meaningful duration to report — see
+  [Retrieval tracking](#retrieval-tracking).
+- **Intentional UI views**: `null` — not a measured operation at all.
+
+```php
+'performance' => [
+    'enabled' => true,
+    'track_duration' => true,
+
+    // memory_get_usage()/memory_get_peak_usage() add a small but real cost
+    // to every tracked operation — off by default.
+    'track_memory' => false,
+
+    'slow_ms' => 100,
+    'very_slow_ms' => 1000,
+],
+```
+
+`slow_ms`/`very_slow_ms` only drive the dashboard's Fast/Normal/Slow/Very
+Slow classification (`Abdulbaset\ActivityTracker\Support\DurationFormatter`)
+and the "Slow activities only" filter — they never change what gets
+tracked. The dashboard formats durations intelligently (`0.42 ms`,
+`845.20 ms`, `1.42 s`) rather than showing raw floats.
+
+This package is an audit/observability tool, not a profiler — duration and
+(optional) memory figures exist to flag genuinely slow operations, not to
+replace Blackfire, Telescope, or a real APM.
+
+## Full URL, path & referrer
+
+The **full request URL** — not the route name — is the primary "where did
+this happen" fact, because a route can be renamed, unnamed, or a closure,
+while the URL is simply what actually happened:
+
+```
+url:        https://example.com/admin/users/15?tab=permissions
+path:       admin/users/15
+route_name: admin.users.show   (secondary metadata, still recorded)
+```
+
+The HTTP `Referer` header (yes, misspelled in the HTTP spec itself) is
+captured as `referrer_url` when present, and left `null` — never
+fabricated — when absent. Both `url` and `referrer_url`:
+
+- have configured **sensitive query parameters redacted** before storage
+  (`token`, `password`, `api_key`, `secret`, `access_token`, `refresh_token`,
+  `client_secret`, `signature`, by default — extend via
+  `sensitive_query_parameters`): `?token=abc123` becomes `?token=[REDACTED]`,
+  preserving the rest of the URL;
+- are **truncated** at a configurable length (`context.max_url_length`,
+  `context.max_referrer_length` — both default 2048) since both are
+  untrusted, attacker-influenceable input;
+- are **escaped on output** everywhere the dashboard renders them (standard
+  Blade `{{ }}` escaping) — never rendered as raw HTML, never executed.
+
+### HTTP status code
+
+Most activities are recorded *mid-request*, before a response — and
+therefore a status code — exists yet. `http_status` is backfilled once,
+after the response is actually sent, by
+`ActivityTrackerRequestLifecycleMiddleware::terminate()` (pushed onto
+Laravel's global middleware stack, so it covers API-only routes too, not
+just the "web" group): a single `UPDATE ... WHERE request_id = ?` per
+request, skipped entirely for requests that tracked nothing at all.
+Exceptions that carry their own status code (e.g. a thrown `HttpException`)
+report it immediately; everything else gets the real response status a
+moment later.
+
+## Exception tracking
+
+Unhandled/reported exceptions are recorded as a dedicated `exception`
+activity — never disguised as a CRUD action, always visually distinct in
+the dashboard (a dedicated red badge, its own section on the details page).
+
+### How it hooks into Laravel
+
+`ActivityTrackerExceptionHandlerDecorator` wraps (via
+`Container::extend()`) whatever `Illuminate\Contracts\Debug\ExceptionHandler`
+is already bound — your own custom `Handler`, or Laravel's default. It is
+never a replacement:
+
+- `report()`, `shouldReport()`, `render()`, and `renderForConsole()` are all
+  forwarded to the original handler, unchanged — your own custom
+  `render()`/`register()` logic keeps working exactly as before.
+- Recording an exception is wrapped in its own `try`/`catch` inside
+  `ActivityTrackerExceptionService`: if building or storing the activity
+  fails for any reason, the *original* exception still reaches
+  `$handler->report($e)` normally. A tracker failure can never replace or
+  suppress your application's real error handling.
+- The same exception instance is never recorded twice — deduplicated by
+  object identity (`spl_object_id()`), not by message or trace content
+  (which two unrelated exceptions could share).
+
+### What's captured
+
+`exception_class`, `exception_message`, `exception_file`, `exception_line`,
+and (configurable) `stack_trace`, plus the same request context every other
+activity gets (`url`, `execution_context`, `request_id`, causer, ...) and an
+`http_status` derived immediately when the exception itself carries one
+(`Symfony\...\HttpExceptionInterface`), or backfilled like any other
+activity otherwise.
+
+### Ignored ("expected") exceptions
+
+Without a filter, **every** failed login attempt and unmatched route would
+create an exception activity — the same noise problem that led to removing
+`count()`/`exists()` tracking. These are excluded by default:
+
+```php
+'exceptions' => [
+    'enabled' => true,
+    'store_trace' => true,
+    'max_trace_length' => 10000,
+    'ignored_exceptions' => [
+        \Illuminate\Validation\ValidationException::class,
+        \Illuminate\Auth\AuthenticationException::class,
+        \Illuminate\Auth\Access\AuthorizationException::class,
+        \Symfony\Component\HttpKernel\Exception\NotFoundHttpException::class,
+        \Illuminate\Database\Eloquent\ModelNotFoundException::class,
+        \Illuminate\Http\Exceptions\ThrottleRequestsException::class,
+    ],
+],
+```
+
+Add or remove classes freely (subclasses are matched via `instanceof`).
+
+### Stack trace security — read this before enabling in production
+
+`store_trace` is `true` by default and `getTraceAsString()` output is
+truncated to `max_trace_length` (10,000 characters) — but **PHP's default
+stack trace formatting can include literal scalar arguments** passed to
+functions in the call chain. If a plain-text password or token was ever
+passed as a bare string argument somewhere in that call chain, it can show
+up in the trace. This is standard PHP/Laravel behavior, not something a
+single trace *string* can be selectively redacted from after the fact.
+For high-sensitivity applications, set `'store_trace' => false` — the
+class/message/file/line are still fully captured either way.
 
 ## Sensitive data protection
 
@@ -301,6 +564,29 @@ Long-running workers are handled explicitly: `TrackingContext` (which holds
 the current batch ID, request ID, and buffered retrievals) is reset on every
 `JobProcessing` event and flushed + reset again on `JobProcessed`, so nothing
 leaks from one job to the next in the same worker process.
+
+### Job context
+
+When any tracked operation happens while a queued job is processing,
+`execution_context` is `"queue"` and these columns are captured directly
+from the job Laravel handed to `JobProcessing`:
+
+```
+job_name:         App\Jobs\SyncUserOrders   (the queued job's class)
+queue_name:       default
+queue_connection: redis
+queue_attempt:    1
+```
+
+Like everything else, this is reset between jobs — no job's context can
+leak into the next job's activities in the same worker process.
+
+Note: the `sync` queue connection (the Laravel default when nothing else is
+configured) never fires `JobProcessing`/`JobProcessed` at all — jobs run
+inline without going through a worker — so `execution_context` for a
+`sync`-dispatched job's tracked operations will be whatever it already was
+(typically `"http"`, since `sync` jobs usually run mid-request). This is a
+Laravel behavior, not a package limitation.
 
 ## Transactions
 
@@ -442,15 +728,66 @@ requirement — it serves only CSS/JS, nothing user-specific or sensitive.
 The activities index supports a single search box (description, action,
 subject type/ID, causer ID, IP, route, request ID, batch ID), an expandable
 filter panel (action multi-select, subject type, causer, date range, IP,
-HTTP method, route, request ID, batch ID), and column sorting. Sortable
-columns and per-page sizes are whitelisted server-side
-(`Abdulbaset\ActivityTracker\Services\ActivityFilters`) — raw query-string
-values never reach `orderBy()` directly. Filters persist across pagination
-automatically since they're plain query-string parameters.
+HTTP method, route, request ID, batch ID) with a live "N active" indicator,
+and column sorting — including by `id`, `created_at`, `action`,
+`subject_type`, `subject_id`, and `causer`. Sortable columns and per-page
+sizes are whitelisted server-side
+(`Abdulbaset\ActivityTracker\Services\ActivityTrackerFilters`) — raw
+query-string values never reach `orderBy()` directly; an unrecognized `sort`
+value silently falls back to `created_at`. Filters persist across
+pagination automatically since they're plain query-string parameters.
 
 The activity detail page links directly into batch/request-scoped views of
 this same index (`?batch_id=...` / `?request_id=...`) so you can see
 everything that happened in one HTTP request or one correlated operation.
+
+### AJAX behavior
+
+The activities index loads and updates via `XMLHttpRequest` — search,
+every filter, sorting, pagination, and the per-page selector all update the
+table in place, with no full page reload:
+
+- **Search is debounced** (400ms) while typing; pressing Enter or clicking
+  "Search" submits immediately.
+- **Requests are sequenced**, not just fired — starting a new request aborts
+  any request still in flight, so a fast typist can never have an older
+  response overwrite a newer one.
+- **The URL reflects filter state** via `history.pushState()` (filter/search
+  changes) or `history.replaceState()` (pagination, sorting — kept out of
+  back-button history to avoid clutter), so the browser Back/Forward buttons
+  and copy/pasting the URL both work, and `popstate` re-fetches the correct
+  page without pushing a duplicate history entry.
+- **Loading state** is a small spinner badge over the (dimmed, still
+  visible) existing table — never a full-screen loader — and the previous
+  results stay on screen until the new ones are ready.
+- **Errors** replace the results area with "Unable to load activities.
+  Please try again." and a Retry button; no raw exception ever reaches the
+  browser.
+- **Graceful fallback**: every control is a real `<a>`/`<form>` with a real
+  `href`/`action` first. JavaScript intercepts the click/submit for the AJAX
+  behavior above; with JavaScript disabled, every one of these still works
+  as an ordinary server-rendered page navigation to the same named route.
+
+The endpoint is the same named route as the page itself
+(`activity-tracker.activities.index`) — Laravel's `$request->ajax()`
+(driven by the `X-Requested-With: XMLHttpRequest` header the browser sets
+automatically for `XMLHttpRequest`) is what selects the JSON response:
+
+```json
+{
+    "success": true,
+    "data": {
+        "html": "<div class=\"at-table-wrap\">...</div>",
+        "total": 8421,
+        "hasActiveFilters": true
+    }
+}
+```
+
+No URL is ever hardcoded in JavaScript — the results container carries the
+index route's URL in a `data-at-index-url` attribute, and every link the JS
+intercepts already has its own real `href` generated by `route(...)` in
+Blade.
 
 ### Customizing views
 
@@ -478,6 +815,59 @@ A theme toggle in the top bar switches between light and dark, persisted in
 `localStorage` (no database setting involved). `ui.theme` controls the
 initial preference for first-time visitors: `'light'`, `'dark'`, or
 `'system'` (follows the OS/browser preference via `prefers-color-scheme`).
+Animations (row refresh, filter panel open/close, toasts) are subtle and
+CSS-transition-based, and are minimized automatically when the visitor's OS
+has `prefers-reduced-motion: reduce` set — functionality is unaffected.
+
+### JavaScript and CSS isolation
+
+All package JavaScript lives under a single global, `window.ActivityTracker`
+— nothing else is added to `window`. All package CSS classes are prefixed
+`.at-` (`.at-card`, `.at-table`, `.at-btn`, ...) and every page is wrapped in
+a single `.at-scope` container, so the dashboard cannot collide with or
+override your host application's own Bootstrap, Tailwind, or hand-rolled
+`.card`/`.table`/`.button`/`.modal` classes elsewhere on the same domain.
+
+## Class naming conventions
+
+Every package-specific class is named so it's identifiable at a glance in a
+stack trace or log line — not because of any real PHP namespace collision
+risk (there isn't one), but because "ActivityController" or "ActivityService"
+read as generic enough to belong to almost any application:
+
+| Role | Class |
+|---|---|
+| Central tracking decision-maker | `Services\ActivityTrackerManager` |
+| Activities index/detail controller | `Http\Controllers\ActivityTrackerActivityController` |
+| Dashboard overview controller | `Http\Controllers\ActivityTrackerDashboardController` |
+| Statistics page controller | `Http\Controllers\ActivityTrackerStatisticsController` |
+| Dashboard CSS/JS controller | `Http\Controllers\ActivityTrackerAssetController` |
+| Search/filter/sort/pagination | `Services\ActivityTrackerFilters` |
+| Dashboard aggregate queries | `Services\ActivityTrackerStatisticsService` |
+| Activity storage backend | `Services\ActivityTrackerRepository` |
+| SQL classification | `Services\ActivityTrackerQueryClassifier` |
+| Eloquent `eloquent.*` listener | `Observers\ActivityTrackerObserver` |
+| `QueryExecuted` listener | `Listeners\ActivityTrackerQueryListener` |
+| Retrieval buffer → activity flush | `Services\ActivityTrackerRetrievalFlusher` |
+
+A few classes deliberately kept their shorter names, on the judgment that
+prefixing them would add noise without adding clarity:
+
+- **`Models\Activity`** — this is the package's public API (`Activity::query()->...`,
+  documented extensively above); renaming it would be a breaking change for
+  no real disambiguation benefit inside a package literally about "activity"
+  tracking.
+- **`Support\TrackingContext`, `CauserResolver`, `RequestContextResolver`,
+  `Services\SensitiveDataSanitizer`, `Services\ActivityTransformer`** —
+  narrowly-scoped internal collaborators, already unambiguous in context, never
+  referenced directly by application code.
+- **Contracts (`ActivityLoggerInterface`, `QueryClassifierInterface`, ...),
+  Events, the queue `Jobs\StoreActivity` job, and `Console` commands** — already
+  clear from their namespace and behavior-based names.
+
+Route names (`activity-tracker.*`), the view namespace
+(`activity-tracker::...`), and the config key (`activity-tracker`) were
+already consistent before this pass and remain so.
 
 ## Events
 
@@ -526,16 +916,27 @@ auditing:
 
 - **`result_count` for query-listener-sourced activities is not always
   available.** Laravel's `QueryExecuted` event exposes SQL, bindings, and
-  timing — not the query's return value or affected-row count. `count`,
-  `exists`, `sum`/`avg`/`min`/`max`, `bulk_updated`, and `bulk_deleted`
-  activities record *that* the operation happened and against which table,
-  but the numeric result itself is not captured. `retrieved`/`retrieved_many`
-  are the exception — their `result_count` is fully accurate because it
-  comes from Eloquent's own hydration, not the query listener.
+  timing — not the query's return value or affected-row count.
+  `sum`/`avg`/`min`/`max`, `bulk_updated`, and `bulk_deleted` activities
+  record *that* the operation happened and against which table, but the
+  numeric result itself is not captured (this is also *why* `count()` and
+  `exists()` were removed entirely rather than tracked with a
+  perpetually-null result — see [Tracked operations](#tracked-operations)).
+  `retrieved`/`retrieved_many` are the exception — their `result_count` is
+  fully accurate because it comes from Eloquent's own hydration, not the
+  query listener.
+- **A blind Eloquent `retrieved` event carries no information about intent.**
+  The package excludes the two overwhelmingly common sources of false-signal
+  noise (Laravel's own auth resolution, and the package's own dashboard
+  reads) — see
+  [Retrieval strategy & internal reads](#retrieval-strategy--internal-reads)
+  — but cannot generically know that some other read your own application
+  code performs isn't meaningful to you. Wrap it in
+  `TrackingContext::withoutTracking()` yourself if so.
 - **Raw/table-only queries cannot be mapped to an Eloquent model class.**
-  `DB::table('users')->count()` produces `model_type = null, table = users`
-  by design — the package will not guess which model, if any, represents a
-  table.
+  `DB::table('users')->sum('balance')` produces `model_type = null, table =
+  users` by design — the package will not guess which model, if any,
+  represents a table.
 - **A query-builder mass update/delete cannot be distinguished from an
   equivalent raw `DB::table()` call.** Both produce identical SQL. Both are
   recorded as `bulk_updated`/`bulk_deleted` against the table.
@@ -550,6 +951,15 @@ auditing:
   affected-row counts rather than a fabricated number, for the reasons
   above. It also never guesses a link to your application's own model-show
   route — if you want that, add it in a published, customized view.
+- **`http_status` backfill is best-effort, not instantaneous.** It updates
+  after the response is sent, scoped by `request_id`, via a terminable
+  middleware. A process that terminates abnormally (a fatal error the
+  handler never sees, `exit()` called mid-request, a killed worker) can
+  leave `http_status` `null` for activities from that request — this is
+  strictly better than guessing a status that was never actually reached.
+- **Stack traces can contain scalar arguments from the call chain** — see
+  [Exception tracking § Stack trace security](#exception-tracking) before
+  enabling `store_trace` for a high-sensitivity application.
 
 ## Troubleshooting
 
@@ -591,13 +1001,31 @@ composer format     # Laravel Pint
 ```
 
 The test suite covers: create/update/delete/restore/force-delete, find/
-first/get, count/exists/aggregates, bulk update/delete, raw `DB::table()`
-operations, ignored models, sensitive-field exclusion, recursion safety, and
-retrieval buffering/flushing — plus, for the dashboard: access control
-(default Gate, custom Gate, `authorize` toggle), the UI being fully
-removable (`ui.enabled = false` deregisters its routes), search, every
-filter, sorting, pagination, batch/request-scoped views, and graceful
-handling of a deleted subject or causer on the detail page.
+first/get, aggregates, bulk update/delete, raw `DB::table()` operations,
+ignored models, sensitive-field exclusion, recursion safety, and retrieval
+buffering/flushing; explicit regressions proving `count()`/`exists()` create
+zero activities even if force-enabled via config; the auth-model exclusion
+(and that it can be disabled), `TrackingContext::withoutTracking()`'s
+nesting and exception-safety, and the intentional-UI-view mechanism recording exactly
+once; duration recording (present, numeric, positive, disableable, and
+correctly absent for retrieved/retrieved_many); full URL/query-string/path/
+route capture over real HTTP requests, sensitive-query-parameter redaction
+on both `url` and `referrer_url`, referrer truncation, and `http_status`
+backfill after the response is sent; and the exception subsystem —
+class/message/file/line/trace capture, trace truncation and disabling, the
+default ignored-exception list (and that it's configurable), object-identity
+deduplication of a re-reported exception, status-code derivation from
+`HttpExceptionInterface`, and that disabling exception tracking never stops
+the *original* handler from still running.
+Also covered: the intentional-UI-view mechanism recording exactly
+once with no duplicate from the suppressed automatic listener — plus, for
+the dashboard: access control (default Gate, custom Gate, `authorize`
+toggle), the UI being fully removable (`ui.enabled = false` deregisters its
+routes), search, every filter, ID/column sorting with a malicious-input
+whitelist test, pagination, the AJAX JSON endpoint, batch/request-scoped
+views, graceful handling of a deleted subject or causer on the detail page,
+and end-to-end proof that visiting every dashboard page creates no activity
+beyond the one deliberate subject view.
 
 ## Contributing
 

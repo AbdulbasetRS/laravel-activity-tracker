@@ -25,11 +25,29 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
  * @property string|null $query
  * @property string|null $query_type
  * @property int|null $result_count
+ * @property float|null $duration_ms
+ * @property int|null $memory_usage
+ * @property int|null $memory_peak
  * @property string|null $ip_address
  * @property string|null $user_agent
  * @property string|null $route_name
  * @property string|null $http_method
  * @property string|null $url
+ * @property string|null $path
+ * @property string|null $referrer_url
+ * @property int|null $http_status
+ * @property string|null $execution_context
+ * @property string|null $command
+ * @property string|null $job_name
+ * @property string|null $queue_name
+ * @property string|null $queue_connection
+ * @property int|null $queue_attempt
+ * @property string|null $database_connection
+ * @property string|null $exception_class
+ * @property string|null $exception_message
+ * @property string|null $exception_file
+ * @property int|null $exception_line
+ * @property string|null $stack_trace
  * @property array|null $metadata
  */
 class Activity extends Model
@@ -42,6 +60,12 @@ class Activity extends Model
         'changed_values' => 'array',
         'metadata' => 'array',
         'result_count' => 'integer',
+        'duration_ms' => 'float',
+        'memory_usage' => 'integer',
+        'memory_peak' => 'integer',
+        'http_status' => 'integer',
+        'exception_line' => 'integer',
+        'queue_attempt' => 'integer',
     ];
 
     public function __construct(array $attributes = [])
@@ -84,5 +108,20 @@ class Activity extends Model
     public function scopeInBatch(Builder $query, string $batchId): Builder
     {
         return $query->where('batch_id', $batchId);
+    }
+
+    public function scopeExceptions(Builder $query): Builder
+    {
+        return $query->where('action', 'exception');
+    }
+
+    public function scopeSlowerThan(Builder $query, float $milliseconds): Builder
+    {
+        return $query->where('duration_ms', '>=', $milliseconds);
+    }
+
+    public function isException(): bool
+    {
+        return $this->action === 'exception';
     }
 }

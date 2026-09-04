@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Abdulbaset\ActivityTracker\Tests\Feature;
 
 use Abdulbaset\ActivityTracker\Models\Activity;
-use Abdulbaset\ActivityTracker\Services\RetrievalFlusher;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerRetrievalFlusher;
 use Abdulbaset\ActivityTracker\Tests\Fixtures\TestPost;
 use Abdulbaset\ActivityTracker\Tests\TestCase;
 
@@ -131,6 +131,6 @@ final class EloquentTrackingTest extends TestCase
 
     private function flushRetrievals(): void
     {
-        $this->app->make(RetrievalFlusher::class)->flush();
+        $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
     }
 }

@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use Abdulbaset\ActivityTracker\Http\Controllers\ActivityController;
-use Abdulbaset\ActivityTracker\Http\Controllers\ActivityDashboardController;
-use Abdulbaset\ActivityTracker\Http\Controllers\ActivityStatisticsController;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerActivityController;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerDashboardController;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerStatisticsController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -24,9 +24,9 @@ use Illuminate\Support\Facades\Route;
 |
 */
 
-Route::get('/', [ActivityDashboardController::class, 'index'])->name('dashboard');
+Route::get('/', [ActivityTrackerDashboardController::class, 'index'])->name('dashboard');
 
-Route::get('/activities', [ActivityController::class, 'index'])->name('activities.index');
-Route::get('/activities/{activity}', [ActivityController::class, 'show'])->name('activities.show');
+Route::get('/activities', [ActivityTrackerActivityController::class, 'index'])->name('activities.index');
+Route::get('/activities/{activity}', [ActivityTrackerActivityController::class, 'show'])->name('activities.show');
 
-Route::get('/statistics', [ActivityStatisticsController::class, 'index'])->name('statistics');
+Route::get('/statistics', [ActivityTrackerStatisticsController::class, 'index'])->name('statistics');

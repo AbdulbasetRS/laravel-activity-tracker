@@ -43,12 +43,10 @@ final class ActivityTransformer implements ActivityTransformerInterface
             'query' => null,
             'query_type' => null,
             'result_count' => null,
-            'ip_address' => $this->requestContext->ipAddress(),
-            'user_agent' => $this->requestContext->userAgent(),
-            'route_name' => $this->requestContext->routeName(),
-            'http_method' => $this->requestContext->method(),
-            'url' => $this->requestContext->url(),
-        ], $extra, ['metadata' => $metadata]);
+            'duration_ms' => null,
+            'memory_usage' => null,
+            'memory_peak' => null,
+        ], $this->contextDefaults(), $extra, ['metadata' => $metadata]);
 
         return $payload;
     }
@@ -76,12 +74,10 @@ final class ActivityTransformer implements ActivityTransformerInterface
             'query' => $data['query'] ?? null,
             'query_type' => $data['query_type'] ?? null,
             'result_count' => $data['result_count'] ?? null,
-            'ip_address' => $this->requestContext->ipAddress(),
-            'user_agent' => $this->requestContext->userAgent(),
-            'route_name' => $this->requestContext->routeName(),
-            'http_method' => $this->requestContext->method(),
-            'url' => $this->requestContext->url(),
-        ], $overrides, ['metadata' => $metadata]);
+            'duration_ms' => $data['duration_ms'] ?? null,
+            'memory_usage' => null,
+            'memory_peak' => null,
+        ], $this->contextDefaults(), $overrides, ['metadata' => $metadata]);
     }
 
     /**
@@ -120,9 +116,117 @@ final class ActivityTransformer implements ActivityTransformerInterface
         return $this->sanitizer->sanitizeAttributes($model->getAttributes());
     }
 
+    public function fromException(\Throwable $exception): array
+    {
+        [$causerType, $causerId] = $this->causerResolver->resolve();
+
+        $metadata = $this->mergeMetadata([]);
+
+        return array_merge(
+            $this->contextDefaults(),
+            [
+                'batch_id' => $this->trackingContext->batchId(),
+                'request_id' => $this->trackingContext->requestId(),
+                'causer_type' => $causerType,
+                'causer_id' => $causerId,
+                'action' => 'exception',
+                'subject_type' => null,
+                'subject_id' => null,
+                'table' => null,
+                'description' => sprintf('%s: %s', class_basename($exception), $exception->getMessage()),
+                'old_values' => null,
+                'new_values' => null,
+                'changed_values' => null,
+                'query' => null,
+                'query_type' => null,
+                'result_count' => null,
+                'duration_ms' => null,
+                'memory_usage' => null,
+                'memory_peak' => null,
+                'exception_class' => $exception::class,
+                'exception_message' => $exception->getMessage(),
+                'exception_file' => $exception->getFile(),
+                'exception_line' => $exception->getLine(),
+                'stack_trace' => $this->truncatedTrace($exception),
+                // Overrides contextDefaults()'s null placeholder when the
+                // exception itself carries a status code (most HTTP-layer
+                // exceptions do). Order matters: this array is merged AFTER
+                // contextDefaults() specifically so this can win.
+                'http_status' => $this->statusCodeFor($exception),
+            ],
+            ['metadata' => $metadata]
+        );
+    }
+
+    private function truncatedTrace(\Throwable $exception): ?string
+    {
+        if (! config('activity-tracker.exceptions.store_trace', true)) {
+            return null;
+        }
+
+        $trace = $exception->getTraceAsString();
+        $max = (int) config('activity-tracker.exceptions.max_trace_length', 10000);
+
+        return mb_strlen($trace) > $max
+            ? mb_substr($trace, 0, $max)."\n... (truncated)"
+            : $trace;
+    }
+
     /**
-     * Always attach execution_context (http/cli/queue) to metadata, without
-     * clobbering any caller-supplied metadata under the same key.
+     * Only derivable when the exception itself carries a status code (most
+     * HTTP-layer exceptions do); otherwise left null and, in an HTTP
+     * context, backfilled later by ActivityTrackerRequestLifecycleMiddleware
+     * from the actual response — see contextDefaults().
+     */
+    private function statusCodeFor(\Throwable $exception): ?int
+    {
+        if ($exception instanceof \Symfony\Component\HttpKernel\Exception\HttpExceptionInterface) {
+            return $exception->getStatusCode();
+        }
+
+        return null;
+    }
+
+    /**
+     * Request/CLI/database context shared by every activity, regardless of
+     * source. Each accessor already degrades to null outside its
+     * applicable context (e.g. command() is null in HTTP, url() is null in
+     * CLI), and each already respects its own capture_* config toggle.
+     *
+     * @return array<string, mixed>
+     */
+    private function contextDefaults(): array
+    {
+        $jobContext = $this->trackingContext->isInQueueJob() ? $this->trackingContext->jobContext() : [
+            'job_name' => null,
+            'queue_name' => null,
+            'queue_connection' => null,
+            'queue_attempt' => null,
+        ];
+
+        return array_merge([
+            'ip_address' => $this->requestContext->ipAddress(),
+            'user_agent' => $this->requestContext->userAgent(),
+            'route_name' => $this->requestContext->routeName(),
+            'http_method' => $this->requestContext->method(),
+            'url' => $this->requestContext->url(),
+            'path' => $this->requestContext->path(),
+            'referrer_url' => $this->requestContext->referrer(),
+            // http_status is deliberately NOT set here — it genuinely
+            // doesn't exist yet at the point most activities are recorded
+            // mid-request. It is backfilled once, after the response is
+            // sent, by ActivityTrackerRequestLifecycleMiddleware.
+            'http_status' => null,
+            'execution_context' => $this->executionContext(),
+            'command' => $this->requestContext->command(),
+            'database_connection' => $this->requestContext->databaseConnection(),
+        ], $jobContext);
+    }
+
+    /**
+     * Always attach execution_context to metadata too (kept for backward
+     * compatibility with anything reading it from there pre-upgrade), on
+     * top of the dedicated column set by contextDefaults().
      *
      * @param  array<string, mixed>  $extra
      * @return array<string, mixed>

@@ -12,19 +12,24 @@ use Abdulbaset\ActivityTracker\Contracts\ActivityStorageInterface;
 use Abdulbaset\ActivityTracker\Contracts\ActivityTransformerInterface;
 use Abdulbaset\ActivityTracker\Contracts\QueryClassifierInterface;
 use Abdulbaset\ActivityTracker\Contracts\SensitiveDataSanitizerInterface;
-use Abdulbaset\ActivityTracker\Listeners\DatabaseQueryListener;
-use Abdulbaset\ActivityTracker\Observers\EloquentActivityObserver;
-use Abdulbaset\ActivityTracker\Http\Controllers\AssetController;
-use Abdulbaset\ActivityTracker\Services\ActivityRepository;
-use Abdulbaset\ActivityTracker\Services\ActivityTracker;
+use Abdulbaset\ActivityTracker\Handling\ActivityTrackerExceptionHandlerDecorator;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerAssetController;
+use Abdulbaset\ActivityTracker\Http\Middleware\ActivityTrackerRequestLifecycleMiddleware;
+use Abdulbaset\ActivityTracker\Listeners\ActivityTrackerQueryListener;
+use Abdulbaset\ActivityTracker\Observers\ActivityTrackerObserver;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerExceptionService;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerManager;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerQueryClassifier;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerRepository;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerRetrievalFlusher;
 use Abdulbaset\ActivityTracker\Services\ActivityTransformer;
-use Abdulbaset\ActivityTracker\Services\QueryClassifier;
-use Abdulbaset\ActivityTracker\Services\RetrievalFlusher;
 use Abdulbaset\ActivityTracker\Services\SensitiveDataSanitizer;
 use Abdulbaset\ActivityTracker\Support\CauserResolver;
 use Abdulbaset\ActivityTracker\Support\RequestContextResolver;
 use Abdulbaset\ActivityTracker\Support\TrackingContext;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
+use Illuminate\Contracts\Debug\ExceptionHandler;
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
@@ -48,7 +53,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
 
         $this->app->singleton(TrackingContext::class);
 
-        $this->app->singleton(QueryClassifierInterface::class, QueryClassifier::class);
+        $this->app->singleton(QueryClassifierInterface::class, ActivityTrackerQueryClassifier::class);
         $this->app->singleton(SensitiveDataSanitizerInterface::class, SensitiveDataSanitizer::class);
 
         $this->app->singleton(CauserResolver::class, fn ($app) => new CauserResolver($app->make(AuthFactory::class)));
@@ -56,16 +61,37 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         $this->app->bind(RequestContextResolver::class, function ($app) {
             $request = $app->bound('request') ? $app->make('request') : null;
 
-            return new RequestContextResolver($request);
+            return new RequestContextResolver($request, $app->make(SensitiveDataSanitizerInterface::class));
         });
 
         $this->app->singleton(ActivityTransformerInterface::class, ActivityTransformer::class);
-        $this->app->singleton(ActivityStorageInterface::class, ActivityRepository::class);
-        $this->app->singleton(ActivityLoggerInterface::class, ActivityTracker::class);
+        $this->app->singleton(ActivityStorageInterface::class, ActivityTrackerRepository::class);
+        $this->app->singleton(ActivityLoggerInterface::class, ActivityTrackerManager::class);
 
-        $this->app->singleton(RetrievalFlusher::class);
-        $this->app->singleton(EloquentActivityObserver::class);
-        $this->app->singleton(DatabaseQueryListener::class);
+        $this->app->singleton(ActivityTrackerRetrievalFlusher::class);
+        $this->app->singleton(ActivityTrackerObserver::class);
+        $this->app->singleton(ActivityTrackerQueryListener::class);
+        $this->app->singleton(ActivityTrackerExceptionService::class);
+
+        $this->registerExceptionHandling();
+    }
+
+    /**
+     * Decorates (never replaces) the application's bound ExceptionHandler —
+     * see ActivityTrackerExceptionHandlerDecorator for the full rationale.
+     * Registered unconditionally; the decision of WHETHER to actually
+     * record a given exception is made lazily, per-exception, by
+     * ActivityTrackerExceptionService (so config toggled at runtime, e.g.
+     * in tests, takes effect immediately without reBinding anything here).
+     */
+    private function registerExceptionHandling(): void
+    {
+        $this->app->extend(ExceptionHandler::class, function ($handler, $app) {
+            return new ActivityTrackerExceptionHandlerDecorator(
+                $handler,
+                $app->make(ActivityTrackerExceptionService::class)
+            );
+        });
     }
 
     public function boot(): void
@@ -88,6 +114,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         $this->registerQueryTracking();
         $this->registerRetrievalFlushing();
         $this->registerQueueLifecycle();
+        $this->registerRequestLifecycleMiddleware();
         $this->registerCommands();
     }
 
@@ -100,25 +127,41 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
 
     private function publishMigrations(): void
     {
-        // Published with a fresh timestamp so it sorts after the app's
-        // existing migrations, following standard Laravel package convention
-        // (the package also auto-loads its own copy via loadMigrationsFrom,
-        // so publishing is optional and only needed to customize the schema).
-        $timestamp = date('Y_m_d_His');
+        // Published with fresh, sequential timestamps so they sort after the
+        // app's existing migrations and in the correct order relative to
+        // each other (the package also auto-loads its own copies via
+        // loadMigrationsFrom, so publishing is optional and only needed to
+        // customize the schema).
+        $timestamp = time();
 
         $this->publishes([
-            __DIR__.'/../database/migrations/create_activities_table.php.stub' => database_path("migrations/{$timestamp}_create_activities_table.php"),
+            __DIR__.'/../database/migrations/create_activities_table.php.stub' => database_path('migrations/'.date('Y_m_d_His', $timestamp).'_create_activities_table.php'),
+            __DIR__.'/../database/migrations/add_observability_columns_to_activities_table.php.stub' => database_path('migrations/'.date('Y_m_d_His', $timestamp + 1).'_add_observability_columns_to_activities_table.php'),
         ], 'activity-tracker-migrations');
     }
 
     private function registerEloquentTracking(): void
     {
-        Event::listen('eloquent.*', [EloquentActivityObserver::class, 'handle']);
+        Event::listen('eloquent.*', [ActivityTrackerObserver::class, 'handle']);
     }
 
     private function registerQueryTracking(): void
     {
-        Event::listen(QueryExecuted::class, [DatabaseQueryListener::class, 'handle']);
+        Event::listen(QueryExecuted::class, [ActivityTrackerQueryListener::class, 'handle']);
+    }
+
+    /**
+     * Pushed onto the KERNEL's global middleware stack (not just the "web"
+     * group) so http_status backfill covers every HTTP route, including
+     * API-only applications that never use the "web" group at all.
+     */
+    private function registerRequestLifecycleMiddleware(): void
+    {
+        if (! $this->app->bound(Kernel::class)) {
+            return; // console-only bootstrap (e.g. some Artisan contexts) — nothing to push onto
+        }
+
+        $this->app->make(Kernel::class)->pushMiddleware(ActivityTrackerRequestLifecycleMiddleware::class);
     }
 
     private function registerRetrievalFlushing(): void
@@ -128,7 +171,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         // to collapse every buffered "retrieved" event into one activity
         // per model class for this request/command.
         $this->app->terminating(function () {
-            $this->app->make(RetrievalFlusher::class)->flush();
+            $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
         });
     }
 
@@ -138,17 +181,24 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         // the same singleton TrackingContext) across many jobs. Without an
         // explicit reset, a causer, batch ID, or buffered retrieval from job
         // N could leak into the activity records for job N+1.
-        Event::listen(JobProcessing::class, function () {
+        Event::listen(JobProcessing::class, function (JobProcessing $event) {
             $context = $this->app->make(TrackingContext::class);
             $context->reset();
             $context->markInQueueJob(true);
+            $context->setJobContext(
+                $event->job->getName(),
+                $event->job->getQueue(),
+                $event->connectionName,
+                $event->job->attempts()
+            );
         });
 
         Event::listen(JobProcessed::class, function () {
-            $this->app->make(RetrievalFlusher::class)->flush();
+            $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
             $context = $this->app->make(TrackingContext::class);
             $context->reset();
             $context->markInQueueJob(false);
+            $context->setJobContext(null, null, null, null);
         });
     }
 
@@ -210,7 +260,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
             'middleware' => ['web'],
             'as' => 'activity-tracker.',
         ], function () {
-            Route::get('/assets/{file}', [AssetController::class, 'show'])
+            Route::get('/assets/{file}', [ActivityTrackerAssetController::class, 'show'])
                 ->where('file', '.*')
                 ->name('assets');
         });
