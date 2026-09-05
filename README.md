@@ -34,23 +34,25 @@ That's it. Tracking begins immediately.
 12. [Duration & performance](#duration--performance)
 13. [Full URL, path & referrer](#full-url-path--referrer)
 14. [Exception tracking](#exception-tracking)
-15. [Sensitive data protection](#sensitive-data-protection)
-16. [Ignoring models](#ignoring-models)
-17. [Authentication / causer tracking](#authentication--causer-tracking)
-18. [Request metadata](#request-metadata)
-19. [Queue support](#queue-support)
-20. [Transactions](#transactions)
-21. [Reading activities](#reading-activities)
-22. [Admin dashboard](#admin-dashboard)
-23. [Class naming conventions](#class-naming-conventions)
-24. [Events](#events)
-25. [Extending the package](#extending-the-package)
-26. [Performance considerations](#performance-considerations)
-27. [Limitations](#limitations)
-28. [Troubleshooting](#troubleshooting)
-29. [Testing](#testing)
-30. [Contributing](#contributing)
-31. [License](#license)
+15. [Authentication event tracking](#authentication-event-tracking)
+16. [Broadcast monitoring](#broadcast-monitoring)
+17. [Sensitive data protection](#sensitive-data-protection)
+18. [Ignoring models](#ignoring-models)
+19. [Authentication / causer tracking](#authentication--causer-tracking)
+20. [Request metadata](#request-metadata)
+21. [Queue support](#queue-support)
+22. [Transactions](#transactions)
+23. [Reading activities](#reading-activities)
+24. [Admin dashboard](#admin-dashboard)
+25. [Class naming conventions](#class-naming-conventions)
+26. [Events](#events)
+27. [Extending the package](#extending-the-package)
+28. [Performance considerations](#performance-considerations)
+29. [Limitations](#limitations)
+30. [Troubleshooting](#troubleshooting)
+31. [Testing](#testing)
+32. [Contributing](#contributing)
+33. [License](#license)
 
 ---
 
@@ -163,6 +165,8 @@ The `activities` table stores:
 | `command` | The Artisan command's signature name, in CLI context |
 | `job_name`, `queue_name`, `queue_connection`, `queue_attempt` | Captured automatically when tracking happens inside a queued job — see [Queue support](#queue-support) |
 | `exception_class`, `exception_message`, `exception_file`, `exception_line`, `stack_trace` | See [Exception tracking](#exception-tracking) |
+| `auth_action`, `auth_guard`, `auth_provider`, `auth_identifier` | See [Authentication event tracking](#authentication-event-tracking) — `auth_identifier` is always pre-masked |
+| `broadcast_event`, `broadcast_channel`, `broadcast_channel_type`, `broadcast_status` | See [Broadcast monitoring](#broadcast-monitoring) |
 | `metadata` | Free-form JSON for anything else |
 
 Every column added after the initial release is nullable — upgrading and
@@ -193,6 +197,9 @@ php artisan vendor:publish --tag=activity-tracker-migrations
 | `DB::table(...)->insert()/update()/delete()` | Query listener | `raw_insert` / `bulk_updated` / `bulk_deleted` |
 | Viewing a record's subject on the Activity Details page | Explicit, opt-in (`logIntentionalView()`) | `retrieved` (tagged `metadata.context = "ui"`) |
 | An unhandled/reported exception | Exception handler decorator | `exception` — see [Exception tracking](#exception-tracking) |
+| Login / failed login / logout / password reset / email verified / throttled | Laravel auth events | `login` / `login_failed` / `logout` / `password_reset` / `email_verified` / `authentication_throttled` — see [Authentication event tracking](#authentication-event-tracking) |
+| Authorization check denied | `Gate::after()` | `authorization_denied` |
+| A queued broadcast completing or failing | Queue lifecycle (`BroadcastEvent` job) | `broadcast` — see [Broadcast monitoring](#broadcast-monitoring) |
 
 Toggle any of these independently under `track` in the config file.
 
@@ -486,6 +493,151 @@ single trace *string* can be selectively redacted from after the fact.
 For high-sensitivity applications, set `'store_trace' => false` — the
 class/message/file/line are still fully captured either way.
 
+## Authentication event tracking
+
+Login/logout/account-security events are observed via Laravel's own
+authentication events — never overriding auth behavior, and a tracking
+failure can never break a real login/logout (every handler in
+`ActivityTrackerAuthenticationTracker` is wrapped in its own `try`/`catch`).
+
+| Event | Action | Source |
+|---|---|---|
+| Successful login | `login` | `Illuminate\Auth\Events\Login` |
+| Failed attempt | `login_failed` | `Illuminate\Auth\Events\Failed` |
+| Logout | `logout` | `Illuminate\Auth\Events\Logout` |
+| Session/token re-authentication | `authenticated` | `Illuminate\Auth\Events\Authenticated` — **off by default**, see below |
+| Password reset completed | `password_reset` | `Illuminate\Auth\Events\PasswordReset` |
+| Email verified | `email_verified` | `Illuminate\Auth\Events\Verified` |
+| Too many attempts | `authentication_throttled` | `Illuminate\Auth\Events\Lockout` |
+| Authorization check denied | `authorization_denied` | `Gate::after()` |
+
+Each works across guards — `auth_guard`/`auth_provider` are captured from
+the event itself (or resolved from `auth.guards.{guard}.provider`), never
+assuming the default `"web"` guard.
+
+### Why `authenticated` defaults to off
+
+`Authenticated` fires on essentially **every** authenticated request —
+session/token resolution, not an actual login action — enabling it by
+default would reproduce the exact "retrieved User" noise problem this
+package already fixed once (see
+[Retrieval strategy & internal reads](#retrieval-strategy--internal-reads)).
+Turn it on deliberately if you want that level of detail:
+
+```php
+'authentication' => ['track' => ['authenticated' => true]],
+```
+
+### What's intentionally NOT implemented
+
+Only events Laravel's core authentication system reliably fires are
+implemented — nothing is faked:
+
+- **`password_changed`** — a password change is just a `User` update; it's
+  already covered (with the password itself already stripped) by ordinary
+  CRUD tracking. There's no separate core Laravel event for it.
+- **`password_reset_requested`** — core Laravel's `Password::sendResetLink()`
+  dispatches no event to hook.
+- **`account_locked` / `account_unlocked`** — core Laravel has no concept of
+  a *permanent* account lock, only the *temporary* throttling `Lockout`
+  represents (`authentication_throttled`). Claiming a permanent lock from a
+  temporary throttle would be misleading, so it isn't done.
+
+### Authorization denials
+
+Registered via `Gate::after()` — Laravel's own documented mechanism for
+observing every authorization check's *outcome* without altering it. Only
+**denials** are recorded (an allowed check is not a security-relevant
+signal); the ability name is stored in `metadata.ability`, and the checked
+subject (if a model) becomes the activity's `subject_type`/`subject_id`.
+
+### Security
+
+The submitted password is **never** read, logged, or stored — not even
+masked. On a failed attempt, only the configured identifier field
+(`authentication.identifier_field`, default `email`) is extracted, and only
+that exact field — there is deliberately no "fall back to the first
+credential" behavior, because that array also contains the plaintext
+password. The identifier is always masked before storage:
+
+```
+ahmed@example.com  ->  a***@example.com
+ahmed123           ->  a***3
+```
+
+## Broadcast monitoring
+
+Monitors Laravel Broadcasting — WebSocket channels and their connected
+clients — **not** Notification Channels (mail/database/Slack notification
+delivery). Two independent things are provided:
+
+1. **Broadcast activity tracking** — always available, driver-agnostic:
+   observes `Illuminate\Broadcasting\BroadcastEvent` (the queued job Laravel
+   creates for any `ShouldBroadcast` event) completing or failing, via the
+   existing queue lifecycle hooks. Recorded as a `broadcast` activity per
+   channel, with `broadcast_event`, `broadcast_channel`,
+   `broadcast_channel_type`, `broadcast_status` (`sent`/`failed`), and
+   `duration_ms`.
+2. **Live channel/connection statistics** — **only** available when the
+   configured broadcasting driver exposes a management API. Currently
+   integrated: **Pusher**, and **Laravel Reverb** (which implements the
+   Pusher HTTP protocol), and only when the optional
+   `pusher/pusher-php-server` package is installed. Every other driver
+   (`redis`, `log`, `null`, `ably`, or Pusher/Reverb without the SDK)
+   reports honestly:
+
+   ```
+   Live connection statistics unavailable for the configured broadcasting driver (redis).
+   ```
+
+   **Connection counts are never fabricated.** A channel with an unknown
+   connection count shows `—`, never `0` — those mean different things.
+
+### "Sent" is not "received"
+
+`broadcast_status = sent` means the queued broadcast job completed without
+throwing — the application/provider *accepted* the operation. It does
+**not** mean any connected browser actually received or rendered it.
+Laravel has no built-in client-acknowledgement mechanism to observe that,
+and this package does not pretend otherwise.
+
+### `ShouldBroadcastNow` is not tracked
+
+Only queued (`ShouldBroadcast`) events are observed, via the queue job
+Laravel wraps them in. `ShouldBroadcastNow` events broadcast synchronously
+with no queue-job hook to observe non-invasively, so they are **not**
+tracked in this release — a documented limitation, not a silent gap.
+
+### Presence channels
+
+Presence channel members (when the provider integration supports it) are
+available on the channel detail page — `user_id` and display name only,
+never credentials, tokens, or session data. Disable member visibility
+independently of the rest of the dashboard:
+
+```php
+'broadcast_monitoring' => ['show_presence_members' => false],
+```
+
+### Configuration
+
+```php
+'broadcast_monitoring' => [
+    'enabled' => true,
+    'monitor_connections' => true,
+    'show_presence_members' => true,
+    'auto_refresh' => true,
+    'refresh_interval' => 10000, // ms — deliberately not aggressive; this polls a third-party API
+],
+```
+
+### Provider outages never break your application
+
+Every call to the broadcasting provider's management API
+(`ActivityTrackerBroadcastChannelMonitor`'s Pusher/Reverb adapter) is
+wrapped — an outage, timeout, or credential problem degrades to
+"unavailable", never an exception that reaches your users.
+
 ## Sensitive data protection
 
 Configured `sensitive_columns` (password, tokens, secrets, etc.) are
@@ -667,6 +819,9 @@ Every route is named, under the `activity-tracker.` prefix:
 | `activity-tracker.activities.index` | Searchable/filterable activities table |
 | `activity-tracker.activities.show` | Single activity detail |
 | `activity-tracker.statistics` | Breakdown + chart page |
+| `activity-tracker.authentication` | Login/logout/security overview |
+| `activity-tracker.broadcasts` | Broadcast Monitoring overview |
+| `activity-tracker.broadcasts.channel` | A single channel's detail page |
 | `activity-tracker.assets` | Serves the dashboard's own CSS/JS |
 
 Never hardcode the dashboard's URL — always use `route('activity-tracker.activities.index')`
@@ -849,6 +1004,14 @@ read as generic enough to belong to almost any application:
 | Eloquent `eloquent.*` listener | `Observers\ActivityTrackerObserver` |
 | `QueryExecuted` listener | `Listeners\ActivityTrackerQueryListener` |
 | Retrieval buffer → activity flush | `Services\ActivityTrackerRetrievalFlusher` |
+| Exception handler decorator | `Handling\ActivityTrackerExceptionHandlerDecorator` |
+| Exception recording policy (ignore list, dedup) | `Services\ActivityTrackerExceptionService` |
+| Auth event listener (`Login`, `Failed`, `Gate::after()`, ...) | `Listeners\ActivityTrackerAuthenticationTracker` |
+| Broadcast job observer | `Listeners\ActivityTrackerBroadcastTracker` |
+| Broadcast dashboard controller | `Http\Controllers\ActivityTrackerBroadcastController` |
+| Authentication dashboard controller | `Http\Controllers\ActivityTrackerAuthenticationController` |
+| Live channel/connection stats (per-provider) | `Contracts\BroadcastChannelMonitorInterface`, `Services\Broadcasting\PusherBroadcastChannelMonitor`, `Services\Broadcasting\NullBroadcastChannelMonitor` |
+| Broadcast dashboard aggregate queries | `Services\ActivityTrackerBroadcastStatisticsService` |
 
 A few classes deliberately kept their shorter names, on the judgment that
 prefixing them would add noise without adding clarity:
@@ -1018,7 +1181,23 @@ deduplication of a re-reported exception, status-code derivation from
 `HttpExceptionInterface`, and that disabling exception tracking never stops
 the *original* handler from still running.
 Also covered: the intentional-UI-view mechanism recording exactly
-once with no duplicate from the suppressed automatic listener — plus, for
+once with no duplicate from the suppressed automatic listener; job/queue
+context capture (`job_name`/`queue_name`/`queue_connection`/`queue_attempt`)
+and that it never leaks between two different jobs in the same worker;
+**authentication tracking** — login (with guard/causer/duration), failed
+login (masked identifier, and that the submitted password never appears
+anywhere in the stored row, not even in `metadata`), logout (causer captured
+before the guard forgets it), that `authenticated` is off by default and
+can be enabled, password reset, email verification, throttling (masked
+identifier), authorization denial via `Gate::after()` (and that an
+*allowed* check is never recorded), and that the whole subsystem can be
+disabled; and **broadcast monitoring** — the default `NullBroadcastChannelMonitor`
+honestly reporting unavailability (never a fabricated `0`), a processed
+`BroadcastEvent` job producing one activity per channel with the correct
+channel type, a failed job recording the exception, duration measurement,
+non-broadcast jobs being ignored entirely, the feature being disableable,
+and a corrupt/unreadable job payload never propagating an exception into
+the queue worker — plus, for the dashboard:
 the dashboard: access control (default Gate, custom Gate, `authorize`
 toggle), the UI being fully removable (`ui.enabled = false` deregisters its
 routes), search, every filter, ID/column sorting with a malicious-input

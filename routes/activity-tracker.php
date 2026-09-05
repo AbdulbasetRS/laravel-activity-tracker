@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerActivityController;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerAuthenticationController;
+use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerBroadcastController;
 use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerDashboardController;
 use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerStatisticsController;
 use Illuminate\Support\Facades\Route;
@@ -30,3 +32,9 @@ Route::get('/activities', [ActivityTrackerActivityController::class, 'index'])->
 Route::get('/activities/{activity}', [ActivityTrackerActivityController::class, 'show'])->name('activities.show');
 
 Route::get('/statistics', [ActivityTrackerStatisticsController::class, 'index'])->name('statistics');
+
+Route::get('/authentication', [ActivityTrackerAuthenticationController::class, 'index'])->name('authentication');
+
+Route::get('/broadcasts', [ActivityTrackerBroadcastController::class, 'index'])->name('broadcasts');
+Route::get('/broadcasts/{channel}', [ActivityTrackerBroadcastController::class, 'channel'])
+    ->name('broadcasts.channel');

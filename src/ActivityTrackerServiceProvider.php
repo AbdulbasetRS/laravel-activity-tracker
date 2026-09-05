@@ -10,27 +10,42 @@ use Abdulbaset\ActivityTracker\Console\PruneCommand;
 use Abdulbaset\ActivityTracker\Contracts\ActivityLoggerInterface;
 use Abdulbaset\ActivityTracker\Contracts\ActivityStorageInterface;
 use Abdulbaset\ActivityTracker\Contracts\ActivityTransformerInterface;
+use Abdulbaset\ActivityTracker\Contracts\BroadcastChannelMonitorInterface;
 use Abdulbaset\ActivityTracker\Contracts\QueryClassifierInterface;
 use Abdulbaset\ActivityTracker\Contracts\SensitiveDataSanitizerInterface;
 use Abdulbaset\ActivityTracker\Handling\ActivityTrackerExceptionHandlerDecorator;
 use Abdulbaset\ActivityTracker\Http\Controllers\ActivityTrackerAssetController;
 use Abdulbaset\ActivityTracker\Http\Middleware\ActivityTrackerRequestLifecycleMiddleware;
+use Abdulbaset\ActivityTracker\Listeners\ActivityTrackerAuthenticationTracker;
+use Abdulbaset\ActivityTracker\Listeners\ActivityTrackerBroadcastTracker;
 use Abdulbaset\ActivityTracker\Listeners\ActivityTrackerQueryListener;
 use Abdulbaset\ActivityTracker\Observers\ActivityTrackerObserver;
+use Abdulbaset\ActivityTracker\Services\ActivityTrackerBroadcastStatisticsService;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerExceptionService;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerManager;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerQueryClassifier;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerRepository;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerRetrievalFlusher;
 use Abdulbaset\ActivityTracker\Services\ActivityTransformer;
+use Abdulbaset\ActivityTracker\Services\Broadcasting\NullBroadcastChannelMonitor;
+use Abdulbaset\ActivityTracker\Services\Broadcasting\PusherBroadcastChannelMonitor;
 use Abdulbaset\ActivityTracker\Services\SensitiveDataSanitizer;
 use Abdulbaset\ActivityTracker\Support\CauserResolver;
 use Abdulbaset\ActivityTracker\Support\RequestContextResolver;
 use Abdulbaset\ActivityTracker\Support\TrackingContext;
+use Illuminate\Auth\Events\Attempting;
+use Illuminate\Auth\Events\Authenticated;
+use Illuminate\Auth\Events\Failed;
+use Illuminate\Auth\Events\Lockout;
+use Illuminate\Auth\Events\Login;
+use Illuminate\Auth\Events\Logout;
+use Illuminate\Auth\Events\PasswordReset;
+use Illuminate\Auth\Events\Verified;
 use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Support\Facades\Event;
@@ -72,6 +87,21 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         $this->app->singleton(ActivityTrackerObserver::class);
         $this->app->singleton(ActivityTrackerQueryListener::class);
         $this->app->singleton(ActivityTrackerExceptionService::class);
+        $this->app->singleton(ActivityTrackerAuthenticationTracker::class);
+        $this->app->singleton(ActivityTrackerBroadcastTracker::class);
+
+        $this->app->singleton(BroadcastChannelMonitorInterface::class, function () {
+            $driver = (string) config('broadcasting.default', 'null');
+            $connectionConfig = (array) config("broadcasting.connections.{$driver}", []);
+
+            if (in_array($driver, ['pusher', 'reverb'], true) && class_exists(\Pusher\Pusher::class)) {
+                return new PusherBroadcastChannelMonitor($driver, $connectionConfig);
+            }
+
+            return new NullBroadcastChannelMonitor($driver);
+        });
+
+        $this->app->singleton(ActivityTrackerBroadcastStatisticsService::class);
 
         $this->registerExceptionHandling();
     }
@@ -115,6 +145,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         $this->registerRetrievalFlushing();
         $this->registerQueueLifecycle();
         $this->registerRequestLifecycleMiddleware();
+        $this->registerAuthenticationTracking();
         $this->registerCommands();
     }
 
@@ -137,6 +168,7 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../database/migrations/create_activities_table.php.stub' => database_path('migrations/'.date('Y_m_d_His', $timestamp).'_create_activities_table.php'),
             __DIR__.'/../database/migrations/add_observability_columns_to_activities_table.php.stub' => database_path('migrations/'.date('Y_m_d_His', $timestamp + 1).'_add_observability_columns_to_activities_table.php'),
+            __DIR__.'/../database/migrations/add_auth_and_broadcast_columns_to_activities_table.php.stub' => database_path('migrations/'.date('Y_m_d_His', $timestamp + 2).'_add_auth_and_broadcast_columns_to_activities_table.php'),
         ], 'activity-tracker-migrations');
     }
 
@@ -191,15 +223,53 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
                 $event->connectionName,
                 $event->job->attempts()
             );
+
+            // Registered here (after the reset() above) rather than as a
+            // separate Event::listen call, so ordering is guaranteed: the
+            // broadcast timer must start AFTER context is reset, never
+            // before.
+            $this->app->make(ActivityTrackerBroadcastTracker::class)->handleProcessing($event);
         });
 
-        Event::listen(JobProcessed::class, function () {
+        Event::listen(JobProcessed::class, function (JobProcessed $event) {
+            $this->app->make(ActivityTrackerBroadcastTracker::class)->handleProcessed($event);
+
             $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
             $context = $this->app->make(TrackingContext::class);
             $context->reset();
             $context->markInQueueJob(false);
             $context->setJobContext(null, null, null, null);
         });
+
+        Event::listen(JobFailed::class, function (JobFailed $event) {
+            $this->app->make(ActivityTrackerBroadcastTracker::class)->handleFailed($event);
+
+            $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
+            $context = $this->app->make(TrackingContext::class);
+            $context->reset();
+            $context->markInQueueJob(false);
+            $context->setJobContext(null, null, null, null);
+        });
+    }
+
+    private function registerAuthenticationTracking(): void
+    {
+        if (! config('activity-tracker.authentication.enabled', true)) {
+            return;
+        }
+
+        $tracker = fn () => $this->app->make(ActivityTrackerAuthenticationTracker::class);
+
+        Event::listen(Attempting::class, fn (Attempting $e) => $tracker()->handleAttempting($e));
+        Event::listen(Login::class, fn (Login $e) => $tracker()->handleLogin($e));
+        Event::listen(Failed::class, fn (Failed $e) => $tracker()->handleFailed($e));
+        Event::listen(Logout::class, fn (Logout $e) => $tracker()->handleLogout($e));
+        Event::listen(Authenticated::class, fn (Authenticated $e) => $tracker()->handleAuthenticated($e));
+        Event::listen(PasswordReset::class, fn (PasswordReset $e) => $tracker()->handlePasswordReset($e));
+        Event::listen(Verified::class, fn (Verified $e) => $tracker()->handleVerified($e));
+        Event::listen(Lockout::class, fn (Lockout $e) => $tracker()->handleLockout($e));
+
+        Gate::after(fn ($user, $ability, $result, $arguments) => $tracker()->handleGateCheck($user, $ability, $result, $arguments));
     }
 
     private function registerCommands(): void

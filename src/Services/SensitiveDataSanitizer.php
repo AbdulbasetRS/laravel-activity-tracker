@@ -58,8 +58,7 @@ final class SensitiveDataSanitizer implements SensitiveDataSanitizerInterface
     }
 
     public function sanitizeUrl(string $url): string
-    {
-        $parts = parse_url($url);
+    {        $parts = parse_url($url);
 
         if ($parts === false || ! isset($parts['query']) || $parts['query'] === '') {
             return $url;
@@ -124,5 +123,35 @@ final class SensitiveDataSanitizer implements SensitiveDataSanitizerInterface
         // documentation-wise: it is NOT a guarantee, hence bindings storage
         // stays disabled by default.
         return strlen($value) >= 32 && ! str_contains($value, ' ');
+    }
+
+    public function maskIdentifier(string $identifier): string
+    {
+        if ($identifier === '') {
+            return '';
+        }
+
+        if (str_contains($identifier, '@')) {
+            [$local, $domain] = explode('@', $identifier, 2);
+
+            return $this->maskFragment($local).'@'.$domain;
+        }
+
+        return $this->maskFragment($identifier);
+    }
+
+    private function maskFragment(string $value): string
+    {
+        $length = mb_strlen($value);
+
+        if ($length <= 1) {
+            return str_repeat('*', max(1, $length));
+        }
+
+        if ($length <= 3) {
+            return mb_substr($value, 0, 1).str_repeat('*', $length - 1);
+        }
+
+        return mb_substr($value, 0, 1).'***'.mb_substr($value, -1);
     }
 }

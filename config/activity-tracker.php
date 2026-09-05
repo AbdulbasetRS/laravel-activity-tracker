@@ -294,6 +294,85 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Authentication Tracking
+    |--------------------------------------------------------------------------
+    |
+    | Observes Laravel's own auth events (login, logout, failed attempts,
+    | password reset, email verification, throttling) and, via Gate::after(),
+    | authorization denials. Never overrides Laravel's authentication or
+    | authorization behavior — purely listens. A tracking failure can never
+    | break a real login/logout — see ActivityTrackerAuthenticationTracker.
+    |
+    | 'authenticated' defaults to OFF: it fires on essentially every
+    | authenticated request (session/token resolution), not just an actual
+    | login — enabling it is the same trade-off as auditing
+    | retrieval.exclude_auth_models = false. Every identifier (email/
+    | username) is masked before storage — see maskIdentifier() — never
+    | stored in full, and passwords/tokens are never read at all.
+    |
+    */
+    'authentication' => [
+        'enabled' => true,
+
+        // Which field in the submitted credentials array identifies the
+        // user (for masking on a failed attempt / throttle). Never falls
+        // back to "the first credential" — that array also contains the
+        // plaintext password.
+        'identifier_field' => 'email',
+
+        'track' => [
+            'login' => true,
+            'login_failed' => true,
+            'logout' => true,
+            'authenticated' => false,
+            'password_reset' => true,
+            'email_verified' => true,
+            'authentication_throttled' => true,
+            'authorization_denied' => true,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Broadcast Monitoring
+    |--------------------------------------------------------------------------
+    |
+    | Two independent things:
+    |
+    | 1. Activity tracking for queued broadcasts (Illuminate\Broadcasting\
+    |    BroadcastEvent completing or failing) — always available, driver-
+    |    agnostic, via the existing queue lifecycle.
+    | 2. Live channel/connection statistics — ONLY available when the
+    |    configured broadcasting driver exposes a management API. Currently
+    |    supported: Pusher, and Laravel Reverb (which implements the Pusher
+    |    HTTP protocol), both ONLY if pusher/pusher-php-server is installed.
+    |    Every other driver (redis, log, null, ably, or Pusher/Reverb
+    |    without the SDK installed) honestly reports "unavailable" rather
+    |    than fabricating a channel list or connection count. See README §
+    |    Broadcast Monitoring.
+    |
+    */
+    'broadcast_monitoring' => [
+        'enabled' => true,
+
+        // Live connection/channel stats specifically (activity tracking for
+        // queued broadcasts is unaffected by this toggle).
+        'monitor_connections' => true,
+
+        // Presence-channel member lists can reveal who is currently online
+        // — disable if that's not appropriate for your application even
+        // when the dashboard itself is authorized.
+        'show_presence_members' => true,
+
+        'auto_refresh' => true,
+
+        // Milliseconds. Deliberately not "aggressive" — this polls a
+        // third-party provider's API on every tick.
+        'refresh_interval' => 10000,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Admin Dashboard UI
     |--------------------------------------------------------------------------
     |

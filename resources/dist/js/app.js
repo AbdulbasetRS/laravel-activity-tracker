@@ -332,4 +332,92 @@ window.ActivityTracker = window.ActivityTracker || {};
       fetchActivities(window.location.href, { history: 'none' });
     });
   }
+
+  /* ---------- Broadcast monitoring: refresh + auto-refresh (XHR) ---------- */
+
+  var broadcastsAppEl = document.querySelector('[data-at-broadcasts-app]');
+
+  if (broadcastsAppEl) {
+    var broadcastsResultsEl = document.getElementById('at-broadcasts-results');
+    var broadcastsUrl = broadcastsAppEl.getAttribute('data-at-broadcasts-url');
+    var refreshInterval = parseInt(broadcastsAppEl.getAttribute('data-at-refresh-interval'), 10) || 10000;
+    var autoRefreshEnabled = broadcastsAppEl.getAttribute('data-at-auto-refresh') === '1';
+    var broadcastsXhr = null;
+    var autoRefreshTimer = null;
+
+    function setBroadcastsLoading(isLoading) {
+      if (!broadcastsResultsEl) return;
+      broadcastsResultsEl.classList.toggle('is-loading', isLoading);
+    }
+
+    function refreshBroadcasts() {
+      if (!broadcastsResultsEl || !broadcastsUrl) return;
+
+      if (broadcastsXhr) {
+        broadcastsXhr.abort();
+      }
+
+      setBroadcastsLoading(true);
+
+      var xhr = new XMLHttpRequest();
+      broadcastsXhr = xhr;
+      xhr.open('GET', broadcastsUrl, true);
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      xhr.setRequestHeader('Accept', 'application/json');
+
+      xhr.onload = function () {
+        if (xhr !== broadcastsXhr) return;
+        setBroadcastsLoading(false);
+
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            var response = JSON.parse(xhr.responseText);
+            if (response && response.success) {
+              broadcastsResultsEl.innerHTML = response.data.html;
+              return;
+            }
+          } catch (e) {
+            /* fall through to error state */
+          }
+        }
+
+        broadcastsResultsEl.innerHTML =
+          '<div class="at-error-state">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>' +
+          '<h3>Unable to refresh broadcast data.</h3>' +
+          '<p>Please try again.</p>' +
+          '<button type="button" class="at-btn at-btn-primary" data-at-broadcasts-retry>Retry</button>' +
+          '</div>';
+      };
+
+      xhr.onerror = function () {
+        if (xhr !== broadcastsXhr) return;
+        setBroadcastsLoading(false);
+      };
+
+      xhr.send();
+    }
+
+    function scheduleAutoRefresh() {
+      window.clearInterval(autoRefreshTimer);
+      if (autoRefreshEnabled) {
+        autoRefreshTimer = window.setInterval(refreshBroadcasts, refreshInterval);
+      }
+    }
+
+    scheduleAutoRefresh();
+
+    document.addEventListener('click', function (event) {
+      if (event.target.closest('[data-at-broadcasts-refresh]') || event.target.closest('[data-at-broadcasts-retry]')) {
+        refreshBroadcasts();
+      }
+    });
+
+    document.addEventListener('change', function (event) {
+      var toggle = event.target.closest('[data-at-broadcasts-auto-refresh-toggle]');
+      if (!toggle) return;
+      autoRefreshEnabled = toggle.checked;
+      scheduleAutoRefresh();
+    });
+  }
 })(window.ActivityTracker);

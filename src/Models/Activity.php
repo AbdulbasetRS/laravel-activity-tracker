@@ -48,6 +48,14 @@ use Illuminate\Database\Eloquent\Relations\MorphTo;
  * @property string|null $exception_file
  * @property int|null $exception_line
  * @property string|null $stack_trace
+ * @property string|null $auth_action
+ * @property string|null $auth_guard
+ * @property string|null $auth_provider
+ * @property string|null $auth_identifier
+ * @property string|null $broadcast_event
+ * @property string|null $broadcast_channel
+ * @property string|null $broadcast_channel_type
+ * @property string|null $broadcast_status
  * @property array|null $metadata
  */
 class Activity extends Model
@@ -115,6 +123,16 @@ class Activity extends Model
         return $query->where('action', 'exception');
     }
 
+    public function scopeAuthentication(Builder $query): Builder
+    {
+        return $query->whereNotNull('auth_action');
+    }
+
+    public function scopeBroadcasts(Builder $query): Builder
+    {
+        return $query->whereNotNull('broadcast_event');
+    }
+
     public function scopeSlowerThan(Builder $query, float $milliseconds): Builder
     {
         return $query->where('duration_ms', '>=', $milliseconds);
@@ -123,5 +141,15 @@ class Activity extends Model
     public function isException(): bool
     {
         return $this->action === 'exception';
+    }
+
+    public function isAuthEvent(): bool
+    {
+        return $this->auth_action !== null;
+    }
+
+    public function isBroadcastEvent(): bool
+    {
+        return $this->broadcast_event !== null;
     }
 }

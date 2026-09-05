@@ -187,6 +187,107 @@ final class ActivityTransformer implements ActivityTransformerInterface
         return null;
     }
 
+    public function fromAuthEvent(string $authAction, array $data): array
+    {
+        // The causer is usually the authenticated user themselves for
+        // login/logout — but $data can override it (e.g. a failed login has
+        // no authenticated causer at all, and authorization_denied's causer
+        // is whoever was denied, already resolved by the caller).
+        [$resolvedCauserType, $resolvedCauserId] = $this->causerResolver->resolve();
+        $causerType = $data['causer_type'] ?? $resolvedCauserType;
+        $causerId = $data['causer_id'] ?? $resolvedCauserId;
+
+        $metadata = $this->mergeMetadata(['metadata' => $data['metadata'] ?? null]);
+
+        return array_merge(
+            $this->contextDefaults(),
+            [
+                'batch_id' => $this->trackingContext->batchId(),
+                'request_id' => $this->trackingContext->requestId(),
+                'causer_type' => $causerType,
+                'causer_id' => $causerId,
+                'action' => $authAction,
+                'subject_type' => $data['subject_type'] ?? null,
+                'subject_id' => $data['subject_id'] ?? null,
+                'table' => null,
+                'description' => $data['description'] ?? $this->describeAuthEvent($authAction),
+                'old_values' => null,
+                'new_values' => null,
+                'changed_values' => null,
+                'query' => null,
+                'query_type' => null,
+                'result_count' => null,
+                'duration_ms' => $data['duration_ms'] ?? null,
+                'memory_usage' => null,
+                'memory_peak' => null,
+                'http_status' => $data['http_status'] ?? null,
+                'auth_action' => $authAction,
+                'auth_guard' => $data['guard'] ?? null,
+                'auth_provider' => $data['provider'] ?? null,
+                'auth_identifier' => $data['identifier'] ?? null,
+            ],
+            ['metadata' => $metadata]
+        );
+    }
+
+    public function fromBroadcastEvent(string $status, array $data): array
+    {
+        [$causerType, $causerId] = $this->causerResolver->resolve();
+
+        $metadata = $this->mergeMetadata(['metadata' => $data['metadata'] ?? null]);
+
+        return array_merge(
+            $this->contextDefaults(),
+            [
+                'batch_id' => $this->trackingContext->batchId(),
+                'request_id' => $this->trackingContext->requestId(),
+                'causer_type' => $causerType,
+                'causer_id' => $causerId,
+                'action' => 'broadcast',
+                'subject_type' => null,
+                'subject_id' => null,
+                'table' => null,
+                'description' => $data['description'] ?? sprintf(
+                    'Broadcast %s on %s: %s',
+                    $status,
+                    $data['channel'] ?? 'unknown channel',
+                    $data['event'] ?? 'unknown event'
+                ),
+                'old_values' => null,
+                'new_values' => null,
+                'changed_values' => null,
+                'query' => null,
+                'query_type' => null,
+                'result_count' => null,
+                'duration_ms' => $data['duration_ms'] ?? null,
+                'memory_usage' => null,
+                'memory_peak' => null,
+                'exception_class' => $data['exception_class'] ?? null,
+                'exception_message' => $data['exception_message'] ?? null,
+                'broadcast_event' => $data['event'] ?? null,
+                'broadcast_channel' => $data['channel'] ?? null,
+                'broadcast_channel_type' => $data['channel_type'] ?? null,
+                'broadcast_status' => $status,
+            ],
+            ['metadata' => $metadata]
+        );
+    }
+
+    private function describeAuthEvent(string $authAction): string
+    {
+        return match ($authAction) {
+            'login' => 'A user logged in.',
+            'logout' => 'A user logged out.',
+            'login_failed' => 'A login attempt failed.',
+            'authenticated' => 'A user was authenticated from stored session/token.',
+            'password_reset' => "A user's password was reset.",
+            'email_verified' => 'A user verified their email address.',
+            'authentication_throttled' => 'Too many login attempts — throttled.',
+            'authorization_denied' => 'An authorization check was denied.',
+            default => "Authentication event '{$authAction}' occurred.",
+        };
+    }
+
     /**
      * Request/CLI/database context shared by every activity, regardless of
      * source. Each accessor already degrades to null outside its

@@ -131,3 +131,43 @@ All notable changes to `abdulbaset/activity-tracker` will be documented here.
   scalar call-chain arguments (see README § Exception tracking); `store_trace`
   can be disabled for high-sensitivity applications while still keeping
   class/message/file/line.
+
+## [1.3.0] - Unreleased
+
+### Added
+- **Authentication event tracking**: `login`, `login_failed`, `logout`,
+  `password_reset`, `email_verified`, `authentication_throttled`, and
+  `authorization_denied` (via `Gate::after()`), plus optional `authenticated`
+  (off by default — see README). New `ActivityTrackerAuthenticationTracker`
+  listener; new `auth_action`/`auth_guard`/`auth_provider`/`auth_identifier`
+  columns. Identifiers are always masked (`ahmed@example.com` ->
+  `a***@example.com`) before storage; the submitted password is never read.
+  `password_changed`, `password_reset_requested`, `account_locked`, and
+  `account_unlocked` were deliberately NOT implemented — no reliable core
+  Laravel event exists for them (documented in README rather than faked).
+- **Broadcast monitoring**: observes queued `ShouldBroadcast` events
+  (`Illuminate\Broadcasting\BroadcastEvent`) completing or failing via the
+  existing queue lifecycle, recording a `broadcast` activity per channel
+  (`broadcast_event`/`broadcast_channel`/`broadcast_channel_type`/
+  `broadcast_status`, plus duration). New
+  `BroadcastChannelMonitorInterface` abstraction with `Pusher`/`Reverb`
+  (via the optional `pusher/pusher-php-server` SDK) and a `Null` fallback
+  for every other driver, which honestly reports "unavailable" rather than
+  fabricating channel lists or connection counts — a channel with an
+  unknown connection count is `null`, never `0`.
+  `ShouldBroadcastNow` (synchronous) events are NOT tracked — documented
+  limitation, no non-invasive hook exists for them.
+- New Broadcast Monitoring dashboard (overview stats, live channels table
+  with optional XHR auto-refresh, per-channel detail with presence members)
+  and Authentication dashboard (overview stats + recent activity, linking
+  into the existing filtered/AJAX activities index).
+- New additive migration (`add_auth_and_broadcast_columns_to_activities_table`).
+- Explicitly confirmed NOT implemented: Notification Channel tracking
+  (mail/database notification delivery) — out of scope by design, distinct
+  from Broadcasting.
+
+### Security
+- Login-failure/throttle identifier masking never falls back to "the first
+  submitted credential" — only the explicitly configured identifier field
+  is ever read, because that credentials array also contains the plaintext
+  password.

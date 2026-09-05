@@ -41,4 +41,21 @@ interface ActivityLoggerInterface
      * already been made and simply records it.
      */
     public function logException(\Throwable $exception): void;
+
+    /**
+     * Log an authentication or account-security event (login, logout,
+     * login_failed, authorization_denied, ...) as a dedicated activity —
+     * never as a CRUD action on the user model.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public function logAuthEvent(string $authAction, array $data): void;
+
+    /**
+     * Log an observed broadcast operation (a queued ShouldBroadcast job
+     * completing or failing) as a dedicated activity.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    public function logBroadcastEvent(string $status, array $data): void;
 }

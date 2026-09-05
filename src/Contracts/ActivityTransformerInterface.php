@@ -47,4 +47,22 @@ interface ActivityTransformerInterface
      * @return array<string, mixed>
      */
     public function fromException(\Throwable $exception): array;
+
+    /**
+     * Build a normalized activity payload for an authentication/account-
+     * security event.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    public function fromAuthEvent(string $authAction, array $data): array;
+
+    /**
+     * Build a normalized activity payload for an observed broadcast
+     * operation.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    public function fromBroadcastEvent(string $status, array $data): array;
 }

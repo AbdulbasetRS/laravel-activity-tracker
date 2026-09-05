@@ -45,6 +45,10 @@ final class ActivityTrackerFilters
         'sum', 'avg', 'min', 'max',
         'bulk_updated', 'bulk_deleted', 'raw_insert',
         'exception',
+        'login', 'login_failed', 'logout', 'authenticated',
+        'password_reset', 'email_verified', 'authentication_throttled',
+        'authorization_denied',
+        'broadcast',
     ];
 
     private const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
@@ -132,6 +136,10 @@ final class ActivityTrackerFilters
         $this->applyRouteFilter($query);
         $this->applyExactFilter($query, 'request_id');
         $this->applyExactFilter($query, 'batch_id');
+        $this->applyExactFilter($query, 'auth_guard');
+        $this->applyExactFilter($query, 'auth_provider');
+        $this->applyExactFilter($query, 'broadcast_channel');
+        $this->applyExactFilter($query, 'broadcast_status');
         $this->applySort($query);
 
         return $query;
@@ -162,6 +170,10 @@ final class ActivityTrackerFilters
             'route' => $this->request->string('route')->trim()->value() ?: null,
             'request_id' => $this->request->string('request_id')->trim()->value() ?: null,
             'batch_id' => $this->request->string('batch_id')->trim()->value() ?: null,
+            'auth_guard' => $this->request->string('auth_guard')->trim()->value() ?: null,
+            'auth_provider' => $this->request->string('auth_provider')->trim()->value() ?: null,
+            'broadcast_channel' => $this->request->string('broadcast_channel')->trim()->value() ?: null,
+            'broadcast_status' => $this->request->string('broadcast_status')->trim()->value() ?: null,
             'sort' => $this->sortKey(),
             'direction' => $this->sortDirection(),
             'per_page' => $this->perPage(),
@@ -265,7 +277,11 @@ final class ActivityTrackerFilters
                 ->orWhere('batch_id', 'like', "%{$term}%")
                 ->orWhere('exception_class', 'like', "%{$term}%")
                 ->orWhere('exception_message', 'like', "%{$term}%")
-                ->orWhere('exception_file', 'like', "%{$term}%");
+                ->orWhere('exception_file', 'like', "%{$term}%")
+                ->orWhere('auth_identifier', 'like', "%{$term}%")
+                ->orWhere('user_agent', 'like', "%{$term}%")
+                ->orWhere('broadcast_channel', 'like', "%{$term}%")
+                ->orWhere('broadcast_event', 'like', "%{$term}%");
         });
     }
 

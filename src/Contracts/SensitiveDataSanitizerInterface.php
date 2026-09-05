@@ -31,4 +31,11 @@ interface SensitiveDataSanitizerInterface
      * header).
      */
     public function sanitizeUrl(string $url): string;
+
+    /**
+     * Mask a user-supplied authentication identifier (email or username)
+     * for safe display — e.g. "ahmed@example.com" -> "a***@example.com",
+     * "ahmed123" -> "a***3". Never returns the original value unmasked.
+     */
+    public function maskIdentifier(string $identifier): string;
 }

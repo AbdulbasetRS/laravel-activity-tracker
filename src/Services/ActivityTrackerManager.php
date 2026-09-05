@@ -96,6 +96,34 @@ final class ActivityTrackerManager implements ActivityLoggerInterface
         $this->dispatch($payload);
     }
 
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function logAuthEvent(string $authAction, array $data): void
+    {
+        if ($this->isExcludedByBaseRules(null, null)) {
+            return;
+        }
+
+        $payload = $this->transformer->fromAuthEvent($authAction, $data);
+
+        $this->dispatch($payload);
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public function logBroadcastEvent(string $status, array $data): void
+    {
+        if ($this->isExcludedByBaseRules(null, null)) {
+            return;
+        }
+
+        $payload = $this->transformer->fromBroadcastEvent($status, $data);
+
+        $this->dispatch($payload);
+    }
+
     private function shouldTrack(string $action, ?string $table, ?string $modelType): bool
     {
         // "count" and "exists" are intentionally never tracked (they produce
