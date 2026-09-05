@@ -1,45 +1,45 @@
-# name: tests
+name: tests
 
-# on:
-#   push:
-#   pull_request:
+on:
+  push:
+  pull_request:
 
-# jobs:
-#   test:
-#     runs-on: ubuntu-latest
-#     strategy:
-#       fail-fast: false
-#       matrix:
-#         php: [8.1, 8.2, 8.3]
-#         laravel: [10.*, 11.*, 12.*]
-#         exclude:
-#           - php: 8.1
-#             laravel: 11.*
-#           - php: 8.1
-#             laravel: 12.*
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: [8.1, 8.2, 8.3]
+        laravel: [10.*, 11.*, 12.*]
+        exclude:
+          - php: 8.1
+            laravel: 11.*
+          - php: 8.1
+            laravel: 12.*
 
-#     name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel }}
+    name: PHP ${{ matrix.php }} - Laravel ${{ matrix.laravel }}
 
-#     steps:
-#       - uses: actions/checkout@v4
+    steps:
+      - uses: actions/checkout@v4
 
-#       - name: Setup PHP
-#         uses: shivammathur/setup-php@v2
-#         with:
-#           php-version: ${{ matrix.php }}
-#           extensions: sqlite3, pdo_sqlite
-#           coverage: none
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sqlite3, pdo_sqlite
+          coverage: none
 
-#       - name: Install dependencies
-#         run: |
-#           composer require "illuminate/support:${{ matrix.laravel }}" --no-interaction --no-update
-#           composer update --prefer-dist --no-interaction --no-progress
+      - name: Install dependencies
+        run: |
+          composer require "illuminate/support:${{ matrix.laravel }}" --no-interaction --no-update
+          composer update --prefer-dist --no-interaction --no-progress
 
-#       - name: Run test suite
-#         run: vendor/bin/phpunit
+      - name: Run test suite
+        run: vendor/bin/phpunit
 
-#       - name: Run PHPStan
-#         run: vendor/bin/phpstan analyse --no-progress
+      - name: Run PHPStan
+        run: vendor/bin/phpstan analyse --no-progress
 
-#       - name: Run Pint (dry run)
-#         run: vendor/bin/pint --test
+      - name: Run Pint (dry run)
+        run: vendor/bin/pint --test
