@@ -10,35 +10,80 @@ use Abdulbaset\ActivityTracker\Services\ActivityTrackerRetrievalFlusher;
 use Abdulbaset\ActivityTracker\Tests\Fixtures\TestPost;
 use Abdulbaset\ActivityTracker\Tests\Fixtures\TestUser;
 use Abdulbaset\ActivityTracker\Tests\TestCase;
+use Illuminate\Auth\EloquentUserProvider;
 
 /**
- * Regression coverage for the "opening the dashboard records a spurious
- * 'retrieved User' activity" bug.
+ * Regression coverage for two related "retrieved" bugs.
  *
- * Root cause: Laravel's own auth system resolves the current guard's user
- * via a plain Eloquent retrieval (Illuminate\Auth\EloquentUserProvider::
- * retrieveById(), used by the 'auth' middleware, Gate checks, and
- * auth()->user()) on virtually every authenticated request — not just
- * dashboard requests. Because the package listens to Eloquent's 'retrieved'
- * event globally, that framework-internal read was being recorded exactly
- * like a meaningful application read.
+ * Bug 1 (fixed earlier): opening the dashboard recorded a spurious
+ * "retrieved User" activity, because Laravel's auth system resolves the
+ * current guard's user via a plain Eloquent retrieval
+ * (Illuminate\Auth\EloquentUserProvider::retrieveById(), used by the 'auth'
+ * middleware, Gate checks, and auth()->user()) on virtually every
+ * authenticated request — not just dashboard requests — and the package
+ * listened to Eloquent's 'retrieved' event globally.
  *
- * Fix: every model configured under auth.providers.*.model is excluded from
- * "retrieved"/"retrieved_many" tracking by default
- * (activity-tracker.retrieval.exclude_auth_models), independent of and in
- * addition to the package wrapping its OWN internal reads (dashboard,
- * statistics, activities index/details) in TrackingContext::withoutTracking().
+ * Bug 2 (this fix): the first fix over-corrected. It excluded "retrieved"
+ * for the model CLASS configured as an auth provider's model — which
+ * silently suppressed EVERY retrieval of that class, including a direct
+ * `User::find($id)` from real application code (a profile page, an admin
+ * panel — anything). The model was never the problem; the call site is.
+ *
+ * Current fix: ActivityTrackerObserver::isAuthProviderResolution() checks
+ * the real call stack, synchronously, inside the Eloquent "retrieved"
+ * event — before the retrieval is buffered — and only excludes a
+ * retrieval when a `Illuminate\Contracts\Auth\UserProvider` implementation
+ * is genuinely on the stack (i.e. a guard is actually resolving the
+ * current user). This can't be decided later inside
+ * ActivityTrackerManager, because "retrieved"/"retrieved_many" are
+ * buffered and flushed as one aggregated activity at the end of the
+ * request/job, by which point the original call stack is gone — see
+ * TrackingContext::bufferRetrieval() / RetrievalFlusher.
+ *
+ * Independent of and in addition to this, the package wraps its OWN
+ * internal reads (dashboard, statistics, activities index/details) in
+ * TrackingContext::withoutTracking() — see DashboardNoiseTest.
  */
 final class RetrievalNoiseTest extends TestCase
 {
-    public function test_retrieving_the_configured_auth_model_is_not_tracked_by_default(): void
+    /**
+     * The actual bug: `User::find($id)` called directly from application
+     * code (a profile page, an admin panel, anything) MUST still be
+     * tracked like any other model. It must NOT be confused with the auth
+     * guard resolving the current session/token user (see the next test).
+     */
+    public function test_direct_user_find_from_application_code_is_tracked_as_retrieved(): void
     {
         $user = TestUser::create(['name' => 'Ahmed']);
         Activity::query()->truncate();
 
-        $this->app->make(ActivityLoggerInterface::class)->logModelEvent('retrieved', $user->fresh());
+        TestUser::find($user->id);
         $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
 
+        $this->assertSame(
+            1,
+            Activity::query()->where('subject_type', TestUser::class)->where('action', 'retrieved')->count()
+        );
+    }
+
+    /**
+     * This is the actual framework mechanic the exclusion targets: a
+     * `UserProvider` resolving a user (exactly what an auth guard does
+     * internally) — genuinely different from the test above because
+     * `EloquentUserProvider::retrieveById()` is really on the call stack
+     * here, not merely because the model happens to be the same class.
+     */
+    public function test_retrieval_via_a_user_provider_is_not_tracked(): void
+    {
+        $user = TestUser::create(['name' => 'Ahmed']);
+        Activity::query()->truncate();
+
+        $provider = new EloquentUserProvider($this->app->make('hash'), TestUser::class);
+        $resolved = $provider->retrieveById($user->id);
+
+        $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
+
+        $this->assertNotNull($resolved);
         $this->assertSame(0, Activity::query()->where('subject_type', TestUser::class)->count());
     }
 
@@ -47,7 +92,7 @@ final class RetrievalNoiseTest extends TestCase
         $post = TestPost::create(['title' => 'A']);
         Activity::query()->truncate();
 
-        $this->app->make(ActivityLoggerInterface::class)->logModelEvent('retrieved', $post->fresh());
+        TestPost::find($post->id);
         $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
 
         $this->assertSame(1, Activity::query()->where('subject_type', TestPost::class)->where('action', 'retrieved')->count());
@@ -60,7 +105,9 @@ final class RetrievalNoiseTest extends TestCase
         $user = TestUser::create(['name' => 'Ahmed']);
         Activity::query()->truncate();
 
-        $this->app->make(ActivityLoggerInterface::class)->logModelEvent('retrieved', $user->fresh());
+        $provider = new EloquentUserProvider($this->app->make('hash'), TestUser::class);
+        $provider->retrieveById($user->id);
+
         $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
 
         $this->assertSame(1, Activity::query()->where('subject_type', TestUser::class)->count());

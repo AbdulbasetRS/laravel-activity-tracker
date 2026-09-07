@@ -171,3 +171,49 @@ All notable changes to `abdulbaset/activity-tracker` will be documented here.
   submitted credential" — only the explicitly configured identifier field
   is ever read, because that credentials array also contains the plaintext
   password.
+
+## [1.3.1] - Unreleased
+
+### Fixed
+- **CRITICAL: `User::find($id)` (and any retrieval of a model configured as
+  an auth provider's model) was never tracked, even when called directly
+  from application code.** Root cause: the `retrieval.exclude_auth_models`
+  exclusion added in 1.2.0 checked only the model's CLASS, which silently
+  suppressed every retrieval of that class — not just the framework-internal
+  read (a guard resolving the current user) it was meant to target. Fixed
+  by moving the check into `ActivityTrackerObserver`, where it runs
+  synchronously inside the real Eloquent `retrieved` event and inspects the
+  actual call stack for a genuine `Illuminate\Contracts\Auth\UserProvider`
+  frame — a direct `User::find($id)` has no such frame and is now tracked
+  exactly like any other model, while the auth guard's internal resolution
+  remains correctly excluded.
+- Broadcast Monitoring's live channel list is now memoized per request (was
+  being fetched from the provider up to 4 separate times per dashboard
+  render — once per independent statistic) and cached across requests for
+  `broadcast_monitoring.cache_seconds` (default 5s, configurable, `0`
+  disables caching) — the provider is never called from ordinary activity
+  tracking, only from the Broadcast Monitoring pages themselves.
+- Fixed GitHub Actions matrix incorrectly pinning only `illuminate/support`
+  to a Laravel version while leaving every other `illuminate/*` package
+  unconstrained (could resolve mismatched, invalid version combinations).
+  Now pins `orchestra/testbench` instead, which is the standard, correct
+  way to drive a Laravel package's version matrix.
+
+### Added
+- `ActivityTrackerBroadcastStatisticsService::definedChannelPatterns()` —
+  best-effort listing of `Broadcast::channel(...)`-registered patterns,
+  clearly distinguished in the dashboard from live "active provider
+  channels" (never conflated).
+- CI: a `composer validate --strict` job, and a dedicated package-discovery
+  job that installs the package into a throwaway `laravel/laravel`
+  skeleton via a real Composer path repository (not Testbench's explicit
+  provider registration) to prove `composer.json`'s
+  `extra.laravel.providers` auto-discovery entry actually works end to end.
+
+### Tests
+- New regression tests proving `User::find()` is tracked directly, that an
+  actual `EloquentUserProvider::retrieveById()` call is excluded, and that
+  a non-auth model is unaffected either way.
+- New tests for broadcast channel-list memoization/caching, the Pusher
+  driver falling back to the Null monitor when the SDK isn't installed, and
+  `definedChannelPatterns()` degrading gracefully.

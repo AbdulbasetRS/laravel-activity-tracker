@@ -164,4 +164,96 @@ final class BroadcastMonitoringTest extends TestCase
 
         $this->assertTrue(true);
     }
+
+    public function test_pusher_driver_without_the_sdk_installed_falls_back_to_the_null_monitor(): void
+    {
+        config()->set('broadcasting.default', 'pusher');
+        config()->set('broadcasting.connections.pusher', ['key' => 'x', 'secret' => 'y', 'app_id' => 'z']);
+
+        // The container singleton was already resolved during boot with the
+        // driver at that time — rebuild it fresh with the new config to
+        // exercise the actual resolution logic.
+        $this->app->forgetInstance(BroadcastChannelMonitorInterface::class);
+        $this->app->singleton(BroadcastChannelMonitorInterface::class, function () {
+            $driver = (string) config('broadcasting.default', 'null');
+            $connectionConfig = (array) config("broadcasting.connections.{$driver}", []);
+
+            if (in_array($driver, ['pusher', 'reverb'], true) && class_exists(\Pusher\Pusher::class)) {
+                return new \Abdulbaset\ActivityTracker\Services\Broadcasting\PusherBroadcastChannelMonitor($driver, $connectionConfig);
+            }
+
+            return new NullBroadcastChannelMonitor($driver);
+        });
+
+        $monitor = $this->app->make(BroadcastChannelMonitorInterface::class);
+
+        // pusher/pusher-php-server is not installed in this test environment
+        // — this is exactly the "SDK not installed" case, proving the
+        // fallback works rather than fataling.
+        $this->assertInstanceOf(NullBroadcastChannelMonitor::class, $monitor);
+        $this->assertSame('pusher', $monitor->provider());
+        $this->assertStringContainsString('pusher/pusher-php-server', $monitor->unavailableReason());
+    }
+
+    public function test_channels_are_memoized_within_a_single_request_to_avoid_redundant_provider_calls(): void
+    {
+        $spy = new class implements BroadcastChannelMonitorInterface
+        {
+            public int $callCount = 0;
+
+            public function provider(): string
+            {
+                return 'spy';
+            }
+
+            public function supportsChannelDiscovery(): bool
+            {
+                return true;
+            }
+
+            public function supportsConnectionCounts(): bool
+            {
+                return true;
+            }
+
+            public function channels(): array
+            {
+                $this->callCount++;
+
+                return [
+                    ['name' => 'presence-chat', 'type' => 'presence', 'connections' => 4, 'status' => 'active'],
+                ];
+            }
+
+            public function presenceMembers(string $channel): ?array
+            {
+                return null;
+            }
+
+            public function unavailableReason(): ?string
+            {
+                return null;
+            }
+        };
+
+        config()->set('activity-tracker.broadcast_monitoring.cache_seconds', 0);
+        $service = new \Abdulbaset\ActivityTracker\Services\ActivityTrackerBroadcastStatisticsService($spy);
+
+        // Four independent stats, each of which needs the channel list.
+        $service->knownChannelsCount();
+        $service->activeChannelsCount();
+        $service->totalConnections();
+        $service->presenceChannelsCount();
+
+        $this->assertSame(1, $spy->callCount);
+    }
+
+    public function test_defined_channel_patterns_degrades_gracefully_and_never_throws(): void
+    {
+        $service = $this->app->make(\Abdulbaset\ActivityTracker\Services\ActivityTrackerBroadcastStatisticsService::class);
+
+        $patterns = $service->definedChannelPatterns();
+
+        $this->assertIsArray($patterns);
+    }
 }

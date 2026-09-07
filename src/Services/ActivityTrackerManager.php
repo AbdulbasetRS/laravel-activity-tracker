@@ -142,15 +142,22 @@ final class ActivityTrackerManager implements ActivityLoggerInterface
             return false;
         }
 
-        // Laravel's own auth system resolves the current guard's user via a
-        // plain Eloquent retrieval (e.g. EloquentUserProvider::retrieveById)
-        // on essentially every authenticated request — "auth" middleware,
-        // Gate checks, `auth()->user()`, etc. That is a framework mechanic,
-        // not a meaningful application read, so it's excluded from
-        // "retrieved" tracking by default. See README § Retrieval strategy.
-        if (in_array($action, ['retrieved', 'retrieved_many'], true) && $this->isAuthProviderModel($modelType)) {
-            return false;
-        }
+        // NOTE: there is deliberately no auth-provider-model exclusion here
+        // for "retrieved"/"retrieved_many". That exclusion (Laravel's auth
+        // guard resolving the current user via a UserProvider — not the
+        // model class itself) is decided per-event, synchronously, inside
+        // ActivityTrackerObserver::isAuthProviderResolution() — BEFORE the
+        // retrieval is buffered — because "retrieved"/"retrieved_many" are
+        // buffered and flushed as one aggregated activity at the end of the
+        // request/job (see TrackingContext::bufferRetrieval() /
+        // RetrievalFlusher). By the time shouldTrack() runs for a flushed
+        // "retrieved" activity, the original call stack that could tell
+        // guard-internal apart from a genuine `User::find($id)` is long
+        // gone, so checking it here would be a no-op — worse, checking by
+        // model class alone here previously suppressed EVERY retrieval of
+        // that class, including real application reads. See README §
+        // Retrieval strategy and the CHANGELOG for the full root-cause
+        // writeup.
 
         $trackKey = $this->trackConfigKey($action);
 
@@ -196,31 +203,16 @@ final class ActivityTrackerManager implements ActivityLoggerInterface
         return false;
     }
 
-    private function isAuthProviderModel(?string $modelType): bool
-    {
-        if ($modelType === null || ! config('activity-tracker.retrieval.exclude_auth_models', true)) {
-            return false;
-        }
-
-        return in_array($modelType, $this->authProviderModels(), true);
-    }
-
     /**
-     * Every model class configured as an auth provider's "model", across all
-     * guards — not just the default one — so multi-guard applications (e.g.
-     * separate "users" and "admins" providers) are covered without
-     * configuration.
-     *
-     * @return array<int, string>
+     * ROOT CAUSE FIX (see README § Retrieval strategy and CHANGELOG): the
+     * auth-provider exclusion used to live here, keyed only on model
+     * class — which silently suppressed EVERY retrieval of that class,
+     * not just the framework-internal one. It has moved to
+     * ActivityTrackerObserver::isAuthProviderResolution(), which runs
+     * synchronously inside the real Eloquent "retrieved" event (while the
+     * call stack that actually distinguishes the two cases still exists)
+     * instead of here, after buffering has already erased that context.
      */
-    private function authProviderModels(): array
-    {
-        return array_values(array_unique(array_filter(array_map(
-            static fn (array $provider): ?string => $provider['model'] ?? null,
-            (array) config('auth.providers', [])
-        ))));
-    }
-
     private function trackConfigKey(string $action): ?string
     {
         return match ($action) {

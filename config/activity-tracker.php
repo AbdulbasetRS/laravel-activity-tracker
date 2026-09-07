@@ -369,6 +369,14 @@ return [
         // Milliseconds. Deliberately not "aggressive" — this polls a
         // third-party provider's API on every tick.
         'refresh_interval' => 10000,
+
+        // Seconds. How long a live channel-list/presence-members response
+        // from the broadcasting provider is cached before the next request
+        // hits the provider's API again — protects against the provider
+        // being called on every dashboard render, every auto-refresh tick,
+        // and every admin who happens to have the page open at once. Set
+        // to 0 to disable caching entirely (always call the provider live).
+        'cache_seconds' => 5,
     ],
 
     /*

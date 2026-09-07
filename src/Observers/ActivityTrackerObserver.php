@@ -86,7 +86,7 @@ final class ActivityTrackerObserver
         }
 
         match ($hook) {
-            'retrieved' => $this->trackingContext->bufferRetrieval($model::class, $model->getKey()),
+            'retrieved' => $this->handleRetrieved($model),
             'creating' => $this->startTimingAndExpectQuery($model, 'insert'),
             'updating' => $this->startTimingAndExpectQuery($model, 'update'),
             'restoring' => $this->restoringModels[spl_object_id($model)] = true,
@@ -124,6 +124,87 @@ final class ActivityTrackerObserver
         }
 
         $this->trackingContext->expectQuery($queryType, $model->getTable());
+    }
+
+    /**
+     * ROOT CAUSE FIX for "retrieved is never tracked for the User model"
+     * (see README § Retrieval strategy and CHANGELOG for the full writeup).
+     *
+     * A previous version excluded "retrieved" for any model class
+     * configured as an auth provider's model — meaning `User::find($id)`
+     * called anywhere in the application was silently suppressed too, not
+     * just the actual framework-internal read that motivated the
+     * exclusion (a guard resolving the current session/token user). The
+     * model class was never the problem; the CALL SITE is.
+     *
+     * This check runs HERE — synchronously, inside the real Eloquent
+     * "retrieved" event, with the real call stack still available — rather
+     * than later, because "retrieved"/"retrieved_many" are buffered and
+     * flushed as one aggregated activity at the end of the request/job
+     * (see TrackingContext::bufferRetrieval() / RetrievalFlusher). By the
+     * time that flush happens, the original call stack is long gone, so
+     * this exclusion MUST be decided per-event, before buffering — not
+     * retrofitted onto the aggregate afterward.
+     */
+    private function handleRetrieved(Model $model): void
+    {
+        if ($this->isAuthProviderResolution($model)) {
+            return;
+        }
+
+        $this->trackingContext->bufferRetrieval($model::class, $model->getKey());
+    }
+
+    /**
+     * True only when BOTH: the model's class is configured as an auth
+     * provider's model, AND the current call stack is genuinely inside a
+     * `Illuminate\Contracts\Auth\UserProvider` implementation's method
+     * (`EloquentUserProvider::retrieveById()`/`retrieveByToken()`/
+     * `retrieveByCredentials()`, or a custom provider — matched via the
+     * interface, not a hardcoded class name). A direct `User::find($id)`
+     * from application code has no such frame and is therefore never
+     * excluded — it is a real, meaningful read like any other.
+     *
+     * The cheap class-list check runs first so the more expensive
+     * backtrace inspection only ever runs for models that are actually
+     * configured as an auth provider's model; every other model's
+     * retrieval tracking pays zero extra cost.
+     */
+    private function isAuthProviderResolution(Model $model): bool
+    {
+        if (! config('activity-tracker.retrieval.exclude_auth_models', true)) {
+            return false;
+        }
+
+        if (! in_array($model::class, $this->authProviderModels(), true)) {
+            return false;
+        }
+
+        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 25) as $frame) {
+            $class = $frame['class'] ?? null;
+
+            if (is_string($class) && $class !== '' && is_a($class, \Illuminate\Contracts\Auth\UserProvider::class, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Every model class configured as an auth provider's "model", across
+     * all guards — not just the default one — so multi-guard applications
+     * (e.g. separate "users" and "admins" providers) are covered without
+     * extra configuration.
+     *
+     * @return array<int, string>
+     */
+    private function authProviderModels(): array
+    {
+        return array_values(array_unique(array_filter(array_map(
+            static fn (array $provider): ?string => $provider['model'] ?? null,
+            (array) config('auth.providers', [])
+        ))));
     }
 
     private function handleCreated(Model $model): void

@@ -43,7 +43,19 @@
     </div>
 @endif
 
-<x-activity-tracker::card header="Broadcast channels">
+@if (! empty($definedChannelPatterns))
+    <x-activity-tracker::card header="Defined channels (from Broadcast::channel())" class="at-mt-16">
+        <p class="at-text-muted" style="margin:0 0 10px;">Channel patterns registered in your application's broadcasting routes — this does NOT mean a client is currently subscribed to one. See "Active provider channels" below for what's actually live.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            @foreach ($definedChannelPatterns as $pattern)
+                <span class="at-badge at-badge-neutral">{{ $pattern }}</span>
+            @endforeach
+        </div>
+    </x-activity-tracker::card>
+@endif
+
+<x-activity-tracker::card header="Active provider channels" class="at-mt-16">
+    <p class="at-text-muted" style="margin:0 0 10px;">Currently active channels reported live by the broadcasting provider — distinct from the channel patterns your application defines (above), which say nothing about whether anyone is actually connected right now.</p>
     @if (! $supportsChannelDiscovery)
         <x-activity-tracker::empty-state
             title="Channel discovery unavailable"

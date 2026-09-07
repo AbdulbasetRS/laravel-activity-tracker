@@ -62,6 +62,7 @@ final class ActivityTrackerBroadcastController extends Controller
             'supportsConnectionCounts' => $this->stats->supportsConnectionCounts(),
             'unavailableReason' => $this->stats->unavailableReason(),
             'channels' => $this->stats->channels(),
+            'definedChannelPatterns' => $this->stats->definedChannelPatterns(),
             'knownChannels' => $this->stats->knownChannelsCount(),
             'activeChannels' => $this->stats->activeChannelsCount(),
             'totalConnections' => $this->stats->totalConnections(),

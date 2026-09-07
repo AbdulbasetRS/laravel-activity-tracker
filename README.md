@@ -227,14 +227,26 @@ if left unmanaged, because Eloquent fires a `retrieved` event for **every**
 model hydration — including ones your application code never asked for.
 Two exclusions keep it meaningful:
 
-**1. Laravel's own auth resolution is excluded by default.** Every request
-through the `auth` middleware, every `Gate`/`can` check, and every call to
-`auth()->user()` resolves the current guard's user via a plain Eloquent
-query (`Illuminate\Auth\EloquentUserProvider::retrieveById()`). That is a
-framework mechanic that happens on nearly every authenticated page load in
-your entire application, not a meaningful business read — so any model
-configured under `auth.providers.*.model` (across all guards) is excluded
-from `retrieved`/`retrieved_many` tracking:
+**1. Laravel's own auth resolution is excluded by default — precisely, not
+by model class.** Every request through the `auth` middleware, every
+`Gate`/`can` check, and every call to `auth()->user()` resolves the current
+guard's user via a plain Eloquent query
+(`Illuminate\Auth\EloquentUserProvider::retrieveById()`, or a custom
+`UserProvider`). That specific call is a framework mechanic, not a
+meaningful business read, and is excluded — but a direct `User::find($id)`
+from your own application code (a profile page, an admin panel, anything)
+is tracked exactly like any other model's retrieval, because it's a real
+read.
+
+The distinction is made by checking whether a
+`Illuminate\Contracts\Auth\UserProvider` implementation is genuinely on the
+call stack at the moment of the retrieval — not by checking the model's
+class. An earlier version of this exclusion checked only the class, which
+silently suppressed *every* retrieval of that class, including genuine
+application reads — this was a real bug, fixed by moving the check to run
+synchronously inside the actual Eloquent `retrieved` event (see
+`ActivityTrackerObserver::isAuthProviderResolution()`), before the
+retrieval is buffered, while the real call stack still exists to check:
 
 ```php
 'retrieval' => [
@@ -245,8 +257,8 @@ from `retrieved`/`retrieved_many` tracking:
 
 **2. The dashboard's own reads are excluded.** Every controller the package
 ships wraps its internal queries — loading Activities for the table, a
-subject/causer for display, statistics aggregates — in
-`TrackingContext::withoutTracking()`:
+subject/causer for display, statistics aggregates, broadcast/authentication
+overview data — in `TrackingContext::withoutTracking()`:
 
 ```php
 app(\Abdulbaset\ActivityTracker\Support\TrackingContext::class)->withoutTracking(function () {
@@ -628,8 +640,37 @@ independently of the rest of the dashboard:
     'show_presence_members' => true,
     'auto_refresh' => true,
     'refresh_interval' => 10000, // ms — deliberately not aggressive; this polls a third-party API
+    'cache_seconds' => 5,        // how long a provider response is cached — see below
 ],
 ```
+
+### Defined channels vs. active provider channels
+
+Two genuinely different concepts, never conflated:
+
+- **Defined channels** — the channel *patterns* your application registered
+  via `Broadcast::channel('orders.{orderId}', ...)`. A definition existing
+  says nothing about whether any client is currently connected to a channel
+  matching it. Shown as a best-effort list (Laravel exposes no public API
+  for this, so it's read via reflection and simply omitted, never an error,
+  if that ever fails).
+- **Active provider channels** — channels the broadcasting provider itself
+  currently reports as live (`channels()` above). This is what the
+  overview stats (Known/Active/Connections/Presence counts) are based on.
+
+### Provider calls are cached and never made from ordinary activity tracking
+
+The provider's management API is called **only** from the Broadcast
+Monitoring pages themselves (dashboard render, manual refresh, an
+auto-refresh tick, a channel detail page) — never as a side effect of
+ordinary CRUD/exception/authentication tracking, and never once per
+Activity row. Within a single request, the channel list is fetched at most
+once and reused for every statistic that needs it (known/active/
+connections/presence counts all share one call). Across requests,
+`broadcast_monitoring.cache_seconds` (default 5) caches the provider's
+response so concurrent dashboard viewers and closely-spaced auto-refresh
+ticks don't each trigger their own API call. Set it to `0` to always call
+the provider live.
 
 ### Provider outages never break your application
 

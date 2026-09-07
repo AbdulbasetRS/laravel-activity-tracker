@@ -31,23 +31,25 @@ php artisan migrate
 12. [المدة الزمنية والأداء](#المدة-الزمنية-والأداء)
 13. [الرابط الكامل، المسار، والـ Referrer](#الرابط-الكامل-المسار-والـ-referrer)
 14. [تتبع الـ Exceptions](#تتبع-الـ-exceptions)
-15. [حماية البيانات الحساسة](#حماية-البيانات-الحساسة)
-16. [استثناء موديلات معينة](#استثناء-موديلات-معينة)
-17. [تسجيل المستخدم (Causer)](#تسجيل-المستخدم-causer)
-18. [بيانات الـ Request](#بيانات-الـ-request)
-19. [الدعم مع الـ Queue](#الدعم-مع-الـ-queue)
-20. [الـ Transactions](#الـ-transactions)
-21. [قراءة الـ Activities](#قراءة-الـ-activities)
-22. [لوحة التحكم (Dashboard)](#لوحة-التحكم-dashboard)
-23. [تسمية الكلاسات](#تسمية-الكلاسات)
-24. [الأحداث (Events)](#الأحداث-events)
-25. [التوسعة](#التوسعة)
-26. [الأداء](#الأداء)
-27. [حدود الباكدج](#حدود-الباكدج)
-28. [حل المشاكل](#حل-المشاكل)
-29. [الاختبارات](#الاختبارات)
-30. [المساهمة](#المساهمة)
-31. [الرخصة](#الرخصة)
+15. [تتبع أحداث الـ Authentication](#تتبع-أحداث-الـ-authentication)
+16. [مراقبة الـ Broadcast](#مراقبة-الـ-broadcast)
+17. [حماية البيانات الحساسة](#حماية-البيانات-الحساسة)
+18. [استثناء موديلات معينة](#استثناء-موديلات-معينة)
+19. [تسجيل المستخدم (Causer)](#تسجيل-المستخدم-causer)
+20. [بيانات الـ Request](#بيانات-الـ-request)
+21. [الدعم مع الـ Queue](#الدعم-مع-الـ-queue)
+22. [الـ Transactions](#الـ-transactions)
+23. [قراءة الـ Activities](#قراءة-الـ-activities)
+24. [لوحة التحكم (Dashboard)](#لوحة-التحكم-dashboard)
+25. [تسمية الكلاسات](#تسمية-الكلاسات)
+26. [الأحداث (Events)](#الأحداث-events)
+27. [التوسعة](#التوسعة)
+28. [الأداء](#الأداء)
+29. [حدود الباكدج](#حدود-الباكدج)
+30. [حل المشاكل](#حل-المشاكل)
+31. [الاختبارات](#الاختبارات)
+32. [المساهمة](#المساهمة)
+33. [الرخصة](#الرخصة)
 
 ---
 
@@ -335,6 +337,97 @@ route_name: admin.users.show   (بيانات ثانوية، لسه بتتسجل)
 ### أمان الـ Stack Trace — اقرأ ده قبل ما تفعّله في الإنتاج
 
 الـ `store_trace` مفعّل افتراضيًا (`true`) وناتج `getTraceAsString()` بيتقطع عند `max_trace_length` (10,000 حرف) — بس **الشكل الافتراضي بتاع PHP للـ stack trace ممكن يحتوي على قيم scalar فعلية اتبعتت كـ arguments** لدوال في سلسلة الاستدعاء. لو باسورد أو توكن اتبعت كـ string عادي كـ argument في أي حتة في السلسلة دي، ممكن يظهر في الـ trace. ده سلوك أساسي في PHP/Laravel نفسه، مش حاجة نقدر نمسحها بشكل انتقائي من نص الـ trace بعد ما يتكتب. للتطبيقات الحساسة جدًا، حط `'store_trace' => false` — الـ class/message/file/line لسه بيتسجلوا بالكامل في الحالتين.
+
+## تتبع أحداث الـ Authentication
+
+عمليات تسجيل الدخول/الخروج والأمان بتاعة الحساب بتتراقب عن طريق أحداث الـ authentication بتاعة Laravel نفسها — أبدًا مش بنعدل سلوك الـ auth، وأي فشل في التتبع أبدًا مايكسرش عملية تسجيل دخول أو خروج حقيقية (كل handler في `ActivityTrackerAuthenticationTracker` ملفوف في `try`/`catch` خاص بيه).
+
+| الحدث | الـ Action | المصدر |
+|---|---|---|
+| تسجيل دخول ناجح | `login` | `Illuminate\Auth\Events\Login` |
+| محاولة فاشلة | `login_failed` | `Illuminate\Auth\Events\Failed` |
+| تسجيل خروج | `logout` | `Illuminate\Auth\Events\Logout` |
+| إعادة مصادقة من جلسة/توكن | `authenticated` | `Illuminate\Auth\Events\Authenticated` — **مقفول افتراضيًا**، شوف تحت |
+| اكتمال إعادة تعيين الباسورد | `password_reset` | `Illuminate\Auth\Events\PasswordReset` |
+| تأكيد الإيميل | `email_verified` | `Illuminate\Auth\Events\Verified` |
+| محاولات كتير | `authentication_throttled` | `Illuminate\Auth\Events\Lockout` |
+| فحص صلاحية اترفض | `authorization_denied` | `Gate::after()` |
+
+كل ده بيشتغل مع أي guard — الـ `auth_guard`/`auth_provider` بيتسجلوا من الحدث نفسه (أو بيتحلوا من `auth.guards.{guard}.provider`)، من غير ما نفترض إن التطبيق بيستخدم الـ guard الافتراضي `"web"` بس.
+
+### ليه `authenticated` مقفول افتراضيًا
+
+الحدث `Authenticated` بيتطلق في تقريبًا **كل** request فيه مستخدم مسجل دخول — يعني حل الجلسة/التوكن، مش عملية تسجيل دخول حقيقية — تفعيله افتراضيًا كان هيكرر بالظبط نفس مشكلة ضجيج "retrieved User" اللي الباكدج دي صلحتها قبل كده (شوف [استراتيجية الـ Retrieval والقراءات الداخلية](#استراتيجية-الـ-retrieval-والقراءات-الداخلية)). فعّله عن قصد لو عايز مستوى التفصيل ده:
+
+```php
+'authentication' => ['track' => ['authenticated' => true]],
+```
+
+### حاجات عن قصد ماعملناهاش
+
+بس الأحداث اللي نظام الـ authentication الأساسي بتاع Laravel بيطلقها بشكل موثوق هي اللي اتعملت — مفيش حاجة مختلقة:
+
+- **`password_changed`** — تغيير الباسورد هو بس عملية تحديث على موديل الـ `User`؛ ده أصلاً متغطى (مع حذف الباسورد نفسه) عن طريق تتبع الـ CRUD العادي. مفيش حدث Laravel أساسي منفصل ليه.
+- **`password_reset_requested`** — الـ `Password::sendResetLink()` الأساسي في Laravel مبيطلقش أي حدث نقدر نستمع له.
+- **`account_locked` / `account_unlocked`** — Laravel الأساسي معندوش مفهوم قفل *دائم* للحساب، بس فيه الـ throttling *المؤقت* اللي الحدث `Lockout` بيمثله (`authentication_throttled`). الادعاء بقفل دائم من throttle مؤقت هيكون مضلل، فمعملناهوش.
+
+### الـ Authorization Denials
+
+متسجلة عن طريق `Gate::after()` — الآلية الموثقة الرسمية بتاعة Laravel نفسها لمراقبة *نتيجة* أي فحص صلاحية من غير ما نغيرها. بس الحالات **المرفوضة** هي اللي بتتسجل (فحص متسموح ليه مش إشارة أمان مهمة)؛ اسم الـ ability بيتخزن في `metadata.ability`، والـ subject اللي اتفحص (لو موديل) بيبقى هو `subject_type`/`subject_id` بتاع النشاط.
+
+### الأمان
+
+الباسورد المُرسل **أبدًا** مبيتقراش، ولا بيتسجل، ولا بيتخزن — حتى لو متقنّع. في محاولة فاشلة، بس الحقل المحدد في الإعدادات (`authentication.identifier_field`، افتراضيًا `email`) هو اللي بيتقرا، وبس هو — عن قصد مفيش سلوك "ارجع لأول credential" لأن الـ array ده فيه كمان الباسورد الصريح. الـ identifier دايمًا بيتقنّع قبل التخزين:
+
+```
+ahmed@example.com  ->  a***@example.com
+ahmed123           ->  a***3
+```
+
+## مراقبة الـ Broadcast
+
+بتراقب Laravel Broadcasting — قنوات WebSocket والعملاء المتصلين بيها — **مش** قنوات الإشعارات (Notification Channels زي البريد أو قواعد البيانات أو Slack). فيه حاجتين مستقلتين:
+
+1. **تتبع نشاط الـ broadcast** — متاح دايمًا، مش مرتبط بمزوّد معين: بيراقب `Illuminate\Broadcasting\BroadcastEvent` (الـ job اللي Laravel بيعمله لأي حدث `ShouldBroadcast`) وقت ما يخلص أو يفشل، عن طريق نفس آليات الـ queue lifecycle الموجودة. بيتسجل كنشاط `broadcast` لكل قناة، ومعاه `broadcast_event`, `broadcast_channel`, `broadcast_channel_type`, `broadcast_status` (`sent`/`failed`)، و`duration_ms`.
+2. **إحصائيات القنوات/الاتصالات الحية** — **بس** متاحة لما الـ broadcasting driver المتظبط يعرض API إدارية. المتكامل حاليًا: **Pusher**، و**Laravel Reverb** (اللي بيطبق بروتوكول Pusher الأساسي عن HTTP)، وبس لما الباكدج الاختيارية `pusher/pusher-php-server` تكون متثبتة. أي driver تاني (`redis`, `log`, `null`, `ably`، أو Pusher/Reverb من غير الـ SDK) بيرجّع رسالة صريحة:
+
+   ```
+   Live connection statistics unavailable for the configured broadcasting driver (redis).
+   ```
+
+   **عدد الاتصالات أبدًا مش بيتلفّق.** قناة عددها غير معروف بتظهر `—`، أبدًا مش `0` — الاتنين معناهم مختلف.
+
+### "اتبعتت" مش معناها "اتستلمت"
+
+`broadcast_status = sent` معناها إن الـ job المتجهز للـ broadcast خلص من غير ما يرمي error — يعني التطبيق/الـ provider *قبل* العملية. ده **مش** معناه إن أي متصفح متصل فعلاً استلمها أو عرضها. Laravel معندهاش آلية acknowledgement بتاعة العميل مبنية فيها أساسًا نقدر نراقب بيها ده، والباكدج دي مش بتدّعي عكس كده.
+
+### الـ `ShouldBroadcastNow` مش بيتتبع
+
+بس الأحداث المتجهزة (`ShouldBroadcast`) هي اللي بتتراقب، عن طريق الـ job بتاع الـ queue اللي Laravel بيلفها فيه. أحداث الـ `ShouldBroadcastNow` بتتبعت بشكل متزامن من غير أي job نقدر نراقبه بطريقة غير تدخلية، فهي **مش** متتبعة في النسخة دي — حد موثق، مش فجوة ساكتة.
+
+### قنوات الـ Presence
+
+أعضاء قنوات الـ presence (لما تكامل الـ provider يدعم ده) متاحين في صفحة تفاصيل القناة — `user_id` والاسم بس، أبدًا مش credentials أو tokens أو بيانات جلسة. عطّل ظهور الأعضاء لوحده من غير ما تأثر على باقي اللوحة:
+
+```php
+'broadcast_monitoring' => ['show_presence_members' => false],
+```
+
+### الإعدادات
+
+```php
+'broadcast_monitoring' => [
+    'enabled' => true,
+    'monitor_connections' => true,
+    'show_presence_members' => true,
+    'auto_refresh' => true,
+    'refresh_interval' => 10000, // مللي ثانية — عن قصد مش عدواني، ده بيسأل API بتاعة طرف تالت
+],
+```
+
+### انقطاع الـ provider أبدًا مايكسرش تطبيقك
+
+أي نداء لـ API الإدارة بتاعة مزوّد الـ broadcasting (adapter الـ Pusher/Reverb بتاع `ActivityTrackerBroadcastChannelMonitor`) ملفوف بالكامل — انقطاع، timeout، أو مشكلة في الـ credentials بترجع "unavailable"، أبدًا مش exception توصل للمستخدمين بتاعينك.
 
 ## حماية البيانات الحساسة
 
