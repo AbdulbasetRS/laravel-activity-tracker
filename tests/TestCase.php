@@ -1,39 +1,52 @@
 <?php
-namespace AbdulbasetRS\ActivityTracker\Tests;
 
-use Orchestra\Testbench\TestCase as OrchestraTestCase;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use AbdulbasetRS\ActivityTracker\ActivityTrackerServiceProvider; // تأكد من مسار الكلاس الصحيح
+declare(strict_types=1);
 
-abstract class TestCase extends OrchestraTestCase
+namespace Abdulbaset\ActivityTracker\Tests;
+
+use Abdulbaset\ActivityTracker\ActivityTrackerServiceProvider;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+use Orchestra\Testbench\TestCase as Orchestra;
+
+abstract class TestCase extends Orchestra
 {
-    use RefreshDatabase;
-
-    protected function setUp(): void
+    protected function getPackageProviders($app): array
     {
-        parent::setUp();
-
-        // توجيه بيئة الاختبار لمسار الـ migrations الخاص بالباكدج لتشغيله
-        // تأكد من أن المسار يطابق هيكل مجلدات مشروعك الفعلي
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations'); 
+        return [ActivityTrackerServiceProvider::class];
     }
 
-    protected function getPackageProviders($app)
+    protected function defineEnvironment($app): void
     {
-        // تسجيل الـ Service Provider الخاص بالباكدج ليتعرف عليه تطبيق الاختبار
-        return [
-            ActivityTrackerServiceProvider::class,
-        ];
-    }
-
-    protected function getEnvironmentSetUp($app)
-    {
-        // إعداد قاعدة البيانات لتكون SQLite في الذاكرة العشوائية
         $app['config']->set('database.default', 'testing');
         $app['config']->set('database.connections.testing', [
-            'driver'   => 'sqlite',
+            'driver' => 'sqlite',
             'database' => ':memory:',
-            'prefix'   => '',
+            'prefix' => '',
         ]);
+
+        $app['config']->set('activity-tracker.queue.enabled', false);
+        $app['config']->set('auth.providers.users.model', \Abdulbaset\ActivityTracker\Tests\Fixtures\TestUser::class);
+    }
+
+    protected function defineDatabaseMigrations(): void
+    {
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+        Schema::create('test_posts', function (Blueprint $table) {
+            $table->id();
+            $table->string('title');
+            $table->string('status')->default('draft');
+            $table->string('password')->nullable();
+            $table->softDeletes();
+            $table->timestamps();
+        });
+
+        Schema::create('test_users', function (Blueprint $table) {
+            $table->id();
+            $table->string('name');
+            $table->string('email')->nullable();
+            $table->timestamps();
+        });
     }
 }
