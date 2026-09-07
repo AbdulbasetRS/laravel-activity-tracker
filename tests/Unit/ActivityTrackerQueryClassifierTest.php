@@ -7,7 +7,7 @@ namespace Abdulbaset\ActivityTracker\Tests\Unit;
 use Abdulbaset\ActivityTracker\Services\ActivityTrackerQueryClassifier;
 use PHPUnit\Framework\TestCase;
 
-final class ActivityTrackerQueryClassifierTest  extends TestCase
+final class ActivityTrackerQueryClassifierTest extends TestCase
 {
     private ActivityTrackerQueryClassifier $classifier;
 
