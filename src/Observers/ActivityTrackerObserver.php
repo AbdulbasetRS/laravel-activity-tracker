@@ -322,7 +322,11 @@ final class ActivityTrackerObserver
      */
     private function isForceDeleting(Model $model): bool
     {
-        return property_exists($model, 'forceDeleting') && $model->forceDeleting === true;
+        if (! method_exists($model, 'isForceDeleting')) {
+            return false;
+        }
+
+        return $model->isForceDeleting();
     }
 
     /**
