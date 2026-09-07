@@ -108,7 +108,7 @@ jobs:
         working-directory: testbed
         run: |
           composer config repositories.local path ../package
-          composer require abdulbaset/activity-tracker:@dev --no-interaction -W
+          composer require abdulbaset/laravel-activity-tracker:@dev --no-interaction -W
 
       - name: Confirm the service provider was discovered
         working-directory: testbed
