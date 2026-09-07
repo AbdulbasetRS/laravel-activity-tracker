@@ -8,9 +8,11 @@ use Abdulbaset\ActivityTracker\ActivityTrackerServiceProvider;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase as Orchestra;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 
 abstract class TestCase extends Orchestra
 {
+    use RefreshDatabase;
     protected function getPackageProviders($app): array
     {
         return [ActivityTrackerServiceProvider::class];
@@ -31,8 +33,7 @@ abstract class TestCase extends Orchestra
 
     protected function defineDatabaseMigrations(): void
     {
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
-
+        $this->loadMigrationsFrom(__DIR__ . '/../src/database/migrations');
         Schema::create('test_posts', function (Blueprint $table) {
             $table->id();
             $table->string('title');
