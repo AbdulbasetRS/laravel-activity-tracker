@@ -73,10 +73,10 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
 
         $this->app->singleton(CauserResolver::class, fn ($app) => new CauserResolver($app->make(AuthFactory::class)));
 
-        $this->app->bind(RequestContextResolver::class, function ($app) {
-            $request = $app->bound('request') ? $app->make('request') : null;
-
-            return new RequestContextResolver($request, $app->make(SensitiveDataSanitizerInterface::class));
+        $this->app->singleton(RequestContextResolver::class, function ($app) {
+            return new RequestContextResolver(
+                $app->make(SensitiveDataSanitizerInterface::class),
+            );
         });
 
         $this->app->singleton(ActivityTransformerInterface::class, ActivityTransformer::class);
@@ -311,9 +311,11 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
      */
     private function registerDefaultGate(): void
     {
-        Gate::define('viewActivityTracker', function ($user = null) {
-            return $this->app->environment('local');
-        });
+        if (! Gate::has('viewActivityTracker')) {
+            Gate::define('viewActivityTracker', function ($user = null) {
+                return $this->app->environment('local');
+            });
+        }
     }
 
     private function registerUiRoutes(): void
@@ -336,6 +338,8 @@ final class ActivityTrackerServiceProvider extends ServiceProvider
         });
 
         $middleware = (array) config('activity-tracker.ui.middleware', ['web']);
+
+        $middleware[] = \Abdulbaset\ActivityTracker\Http\Middleware\ActivityTrackerUiMiddleware::class;
 
         if (config('activity-tracker.ui.authorize', true)) {
             $middleware[] = 'can:viewActivityTracker';

@@ -30,8 +30,10 @@ final class ActivityTrackerRequestLifecycleMiddleware
     {
     }
 
-    public function handle(Request $request, Closure $next): mixed
+    public function handle(Request $request, Closure $next)
     {
+        $this->trackingContext->reset();
+
         return $next($request);
     }
 
