@@ -218,7 +218,7 @@ All notable changes to `abdulbaset/activity-tracker` will be documented here.
   driver falling back to the Null monitor when the SDK isn't installed, and
   `definedChannelPatterns()` degrading gracefully.
 
-## [1.3.2] - Unreleased
+## [1.7.0] - Unreleased
 
 ### Fixed
 - **CRITICAL: opening the Activity Details page (or any other
