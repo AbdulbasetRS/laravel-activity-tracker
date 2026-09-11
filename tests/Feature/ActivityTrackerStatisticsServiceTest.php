@@ -8,8 +8,11 @@ use Abdulbaset\ActivityTracker\Services\ActivityTrackerStatisticsService;
 use Abdulbaset\ActivityTracker\Tests\Fixtures\TestPost;
 use Abdulbaset\ActivityTracker\Tests\TestCase;
 
-final class ActivityStatisticsServiceTest extends TestCase
+final class ActivityTrackerStatisticsServiceTest extends TestCase
 {
+    /**
+     * @test
+     */
     public function test_totals_and_breakdowns_reflect_real_data(): void
     {
         TestPost::create(['title' => 'A']);
