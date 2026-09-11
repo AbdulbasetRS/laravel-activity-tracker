@@ -90,7 +90,7 @@ return [
         // dashboard's "View subject" action on the Activity Details page
         // uses this to record a deliberate, one-time "viewed via UI" entry,
         // independent of (and never duplicating) the automatic listener.
-        'track_ui_views' => true,
+        'track_ui_views' => false,
     ],
 
     /*
