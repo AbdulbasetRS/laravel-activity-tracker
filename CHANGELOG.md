@@ -2,9 +2,17 @@
 
 All notable changes to `abdulbaset/activity-tracker` will be documented here.
 
-## [1.0.0] - Unreleased
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [3.0.0] - Unreleased
+
+This release consolidates the latest development work that was previously split across
+multiple unreleased `1.x` entries. All of the changes below are part of the upcoming
+`3.0.0` release.
 
 ### Added
+
 - Automatic, zero-code tracking of created/updated/deleted/restored/force-deleted models via the Eloquent wildcard event bus.
 - Database query listener for sum/avg/min/max, bulk query-builder updates/deletes, and raw `DB::table()` operations.
 - SQL query classifier with an extensible pattern API.
@@ -16,256 +24,209 @@ All notable changes to `abdulbaset/activity-tracker` will be documented here.
 - Queue worker lifecycle hooks to reset state between jobs.
 - `activity:install`, `activity:clear`, `activity:prune` Artisan commands.
 - Full config file, migration, and polymorphic `Activity` model with query scopes.
-- Optional Blade-based admin dashboard: overview, searchable/filterable/sortable
-  activities index, and a detailed per-activity view — served with zero-config
-  CSS/JS (no publish step, no Node build) and fully removable via `ui.enabled`.
-- Closed-by-default dashboard authorization via a `viewActivityTracker` Gate
-  (local-only out of the box; host apps override it), plus an independent
-  `ui.authorize` toggle and configurable `ui.middleware`.
-- `ActivityTrackerFilters` and `ActivityTrackerStatisticsService` for reusable, injection-safe
-  search/filter/sort/pagination and dashboard aggregate queries.
-- Small, targeted engine additions to support the dashboard: `created` now
-  captures `new_values`, `deleted`/`force_deleted` capture `old_values`, and
-  `restored` carries its underlying diff instead of discarding it; activities
-  also record an `execution_context` (`http`/`cli`/`queue`) in `metadata`.
-
-## [1.1.0] - Unreleased
-
-### Removed
-- **`count` and `exists` tracking, entirely.** They produced no usable audit
-  signal (Laravel's `QueryExecuted` event never exposes the actual result),
-  and were consistently the highest-volume, lowest-value activities the
-  package generated. This is a hard rule in `ActivityTrackerManager`, not a
-  config default — there is no toggle that brings them back.
-
-### Fixed
-- **Opening the dashboard (or any authenticated page) no longer records a
-  spurious `retrieved` activity for the logged-in user.** Root cause:
-  Laravel's own auth resolution (`auth` middleware, Gate checks,
-  `auth()->user()`) retrieves the current guard's user via a plain Eloquent
-  query on virtually every authenticated request; the package's global
-  `eloquent.*` listener was recording that framework mechanic as if it were
-  a meaningful application read. Every model configured under
-  `auth.providers.*.model` is now excluded from `retrieved`/`retrieved_many`
-  tracking by default (`retrieval.exclude_auth_models`).
-- The dashboard's own internal reads (Activity rows for the table, subject/
-  causer for display, statistics aggregates) are now explicitly wrapped in
-  `TrackingContext::withoutTracking()` at every controller, on top of the
-  existing Activity-model exclusion, so the dashboard can never generate
-  tracking noise about itself.
-
-### Added
-- `ActivityLoggerInterface::logIntentionalView()` — records a deliberate
-  "this record was viewed through the audit UI" activity, decoupled from
-  (and never duplicating) the automatic Eloquent listener. The Activity
-  Details page uses this for its subject exactly once per view, tagged
-  `metadata.context = "ui"`. Toggle with `retrieval.track_ui_views`.
+- Optional Blade-based admin dashboard: overview, searchable/filterable/sortable activities index, and a detailed per-activity view — served with zero-config CSS/JS (no publish step, no Node build) and fully removable via `ui.enabled`.
+- Closed-by-default dashboard authorization via a `viewActivityTracker` Gate (local-only out of the box; host apps override it), plus an independent `ui.authorize` toggle and configurable `ui.middleware`.
+- `ActivityTrackerFilters` and `ActivityTrackerStatisticsService` for reusable, injection-safe search/filter/sort/pagination and dashboard aggregate queries.
+- Small, targeted engine additions to support the dashboard: `created` now captures `new_values`, `deleted`/`force_deleted` capture `old_values`, and `restored` carries its underlying diff instead of discarding it; activities also record an `execution_context` (`http`/`cli`/`queue`) in `metadata`.
+- `ActivityLoggerInterface::logIntentionalView()` for deliberate audit-UI record views, decoupled from and never duplicating the automatic Eloquent listener.
 - `id` added to the activities index's sortable-column whitelist.
-- Asynchronous (`XMLHttpRequest`) activities table: debounced search,
-  request abort/sequencing to prevent stale-response race conditions,
-  `history.pushState`/`replaceState` so filtered URLs are shareable and
-  Back/Forward work, a non-blocking loading indicator, and a graceful
-  "Unable to load activities — Retry" error state. Every control still
-  works as a normal server-rendered page without JavaScript.
-- Subtle CSS-transition animations for the filter panel, table rows, and
-  toasts, fully minimized under `prefers-reduced-motion: reduce`.
+- Asynchronous (`XMLHttpRequest`) activities table with debounced search, request abort/sequencing, shareable filtered URLs, Back/Forward support, non-blocking loading state, graceful retry state, and normal server-rendered fallback without JavaScript.
+- Subtle CSS-transition animations for the filter panel, table rows, and toasts, respecting `prefers-reduced-motion: reduce`.
+- Duration tracking (`duration_ms`) using `hrtime(true)` for Eloquent operations and Laravel's `QueryExecuted::$time` for aggregates/bulk/raw queries.
+- Optional `memory_usage` and `memory_peak` tracking, plus `DurationFormatter` with Fast/Normal/Slow/Very Slow classifications.
+- Full request URL as the primary location fact (`path` alongside `url`), with `route_name` retained as secondary metadata.
+- `referrer_url` and `http_status` tracking, including response-time status backfilling through `ActivityTrackerRequestLifecycleMiddleware`.
+- Sanitization and length truncation for `url` and `referrer_url`, including sensitive query-parameter redaction.
+- `execution_context` promoted to an indexed database column, plus `command` and `database_connection` columns.
+- Job context capture: `job_name`, `queue_name`, `queue_connection`, and `queue_attempt`.
+- Automatic exception tracking through `ActivityTrackerExceptionHandlerDecorator`, recording dedicated `exception` activities with configurable stack traces and ignored exception types.
+- Exception deduplication by exception-object identity without suppressing or replacing the application's original exception handling.
+- New activity filters for `http_status`, `execution_context`, `exception_class`, and slow activities.
+- Dedicated Exception section on the Activity Details page with collapsible/copyable stack trace.
+- New additive observability migration with nullable columns so existing installations remain unaffected until migration is run.
+- Authentication event tracking for `login`, `login_failed`, `logout`, `password_reset`, `email_verified`, `authentication_throttled`, and `authorization_denied`, with optional `authenticated` tracking.
+- Authentication metadata columns: `auth_action`, `auth_guard`, `auth_provider`, and `auth_identifier`.
+- Masked authentication identifiers; submitted passwords are never read.
+- Broadcast monitoring for queued `ShouldBroadcast` events, recording broadcast event/channel/status and duration.
+- `BroadcastChannelMonitorInterface` with Pusher/Reverb support and a Null fallback for unsupported drivers.
+- Broadcast Monitoring dashboard with overview statistics, live channels, optional XHR auto-refresh, per-channel details, and presence members.
+- Authentication dashboard with overview statistics, recent activity, and links into the filtered/AJAX activities index.
+- New additive authentication and broadcast migration.
+- `ActivityTrackerBroadcastStatisticsService::definedChannelPatterns()` for best-effort listing of registered `Broadcast::channel(...)` patterns.
+- CI `composer validate --strict` job.
+- Dedicated Composer package-discovery CI job using a real Laravel skeleton and Composer path repository.
+- Regression tests for direct `User::find()` tracking, auth-provider retrieval exclusion, broadcast channel caching, Pusher Null fallback, and defined broadcast channel patterns.
+- Regression tests for real Eloquent retrieval inside `TrackingContext::withoutTracking()` and exact identifier masking behavior.
 
 ### Changed
-- **Class naming standardized for at-a-glance identifiability.** `ActivityController`,
-  `ActivityDashboardController`, `ActivityStatisticsController`, `AssetController`,
-  `ActivityFilters`, `ActivityStatisticsService`, `ActivityRepository`, the core
-  `ActivityTracker` service, `QueryClassifier`, `EloquentActivityObserver`,
-  `DatabaseQueryListener`, and `RetrievalFlusher` were renamed to their
-  `ActivityTracker`-prefixed equivalents (e.g. `ActivityTrackerActivityController`,
-  `ActivityTrackerManager`). `Models\Activity` and other narrowly-scoped
-  internal classes intentionally kept their names — see
-  [Class naming conventions](README.md#class-naming-conventions) for the full
-  table and reasoning. **This is a breaking change** for anyone who bound or
-  extended the old class names directly; route names, view names, and the
-  config key were already consistent and are unaffected.
-- All package JavaScript now lives under a single `window.ActivityTracker`
-  global; all CSS is scoped under `.at-` classes and a `.at-scope` wrapper.
 
-## [1.2.0] - Unreleased
+- Class naming standardized for at-a-glance identifiability. Core classes were renamed to their `ActivityTracker`-prefixed equivalents, including controllers, services, repository, manager, query classifier, observer, database listener, and retrieval flusher.
+- The class naming changes are breaking for applications that directly bound or extended the old class names; route names, view names, and the config key remain unaffected.
+- All package JavaScript now lives under a single `window.ActivityTracker` global.
+- All package CSS is scoped under `.at-` classes and an `.at-scope` wrapper.
+- Dashboard reads are explicitly wrapped in `TrackingContext::withoutTracking()` so the dashboard cannot generate tracking noise about itself.
+- Authentication-model retrieval exclusion now happens at the actual Eloquent `retrieved` event and checks the call stack for genuine auth-provider resolution.
+- Direct application retrievals such as `User::find($id)` are tracked normally, while framework-internal auth resolution remains excluded.
+- Broadcast Monitoring live channel lists are memoized per request and cached across requests according to `broadcast_monitoring.cache_seconds`.
+- `ActivityTrackerBroadcastTracker` channel/event extraction is resilient to Laravel internal queued-command shape changes.
+- `maskIdentifier()` now uses a fixed-length mask that never reveals the trailing character or original identifier length.
+- Removed `pusher/pusher-php-server` from `require-dev`; it remains an optional suggested dependency so the Null-monitor fallback can be tested correctly.
 
-### Added
-- **Duration tracking** (`duration_ms`): `hrtime(true)`-based timing around
-  Eloquent create/update/delete/restore/force-delete's underlying query, and
-  Laravel's own `QueryExecuted::$time` for aggregates/bulk/raw queries.
-  Configurable via `performance.*`; optional `memory_usage`/`memory_peak`
-  (off by default). New `DurationFormatter` for display + Fast/Normal/Slow/
-  Very Slow classification.
-- **Full request URL as the primary location fact** (`path` added
-  alongside the existing `url`; `route_name` remains secondary metadata),
-  plus `referrer_url` (the HTTP `Referer` header) and `http_status`
-  (backfilled after the response is sent by the new
-  `ActivityTrackerRequestLifecycleMiddleware`, pushed onto Laravel's global
-  middleware stack). Both `url` and `referrer_url` are sanitized
-  (`sensitive_query_parameters` redaction) and length-truncated before
-  storage.
-- **`execution_context` promoted to a real, indexed column**
-  (`http`/`cli`/`queue`), plus new `command` (CLI signature name) and
-  `database_connection` columns.
-- **Job context capture** (`job_name`, `queue_name`, `queue_connection`,
-  `queue_attempt`) from the `JobProcessing` event, reset between jobs like
-  the rest of `TrackingContext` — no leakage across a worker's job queue.
-- **Automatic exception tracking.** `ActivityTrackerExceptionHandlerDecorator`
-  observes (via `Container::extend()`, never replacing) the application's
-  bound `ExceptionHandler`. Recorded as a dedicated `exception` action —
-  class, message, file, line, and a configurable, length-limited stack
-  trace — with a default `ignored_exceptions` list (validation/auth/404/
-  throttle) to avoid flooding the log with routine "expected" exceptions.
-  Deduplicated by exception-object identity; a tracker failure can never
-  suppress or replace the original exception handling.
-- New Activities-table columns (URL, Status, Duration) and filters
-  (`http_status`, `execution_context`, `exception_class`, "slow activities
-  only"), a dedicated Exception section on the Activity Details page with a
-  collapsible, copyable stack trace, and `id`/`duration_ms`/`http_status`
-  added to the sortable-column whitelist.
-- New additive migration (`add_observability_columns_to_activities_table`)
-  — every new column is nullable; existing rows and installations are
-  unaffected until you run `php artisan migrate` again.
+### Removed
 
-### Security
-- Documented that PHP's default stack-trace formatting can include literal
-  scalar call-chain arguments (see README § Exception tracking); `store_trace`
-  can be disabled for high-sensitivity applications while still keeping
-  class/message/file/line.
-
-## [1.3.0] - Unreleased
-
-### Added
-- **Authentication event tracking**: `login`, `login_failed`, `logout`,
-  `password_reset`, `email_verified`, `authentication_throttled`, and
-  `authorization_denied` (via `Gate::after()`), plus optional `authenticated`
-  (off by default — see README). New `ActivityTrackerAuthenticationTracker`
-  listener; new `auth_action`/`auth_guard`/`auth_provider`/`auth_identifier`
-  columns. Identifiers are always masked (`ahmed@example.com` ->
-  `a***@example.com`) before storage; the submitted password is never read.
-  `password_changed`, `password_reset_requested`, `account_locked`, and
-  `account_unlocked` were deliberately NOT implemented — no reliable core
-  Laravel event exists for them (documented in README rather than faked).
-- **Broadcast monitoring**: observes queued `ShouldBroadcast` events
-  (`Illuminate\Broadcasting\BroadcastEvent`) completing or failing via the
-  existing queue lifecycle, recording a `broadcast` activity per channel
-  (`broadcast_event`/`broadcast_channel`/`broadcast_channel_type`/
-  `broadcast_status`, plus duration). New
-  `BroadcastChannelMonitorInterface` abstraction with `Pusher`/`Reverb`
-  (via the optional `pusher/pusher-php-server` SDK) and a `Null` fallback
-  for every other driver, which honestly reports "unavailable" rather than
-  fabricating channel lists or connection counts — a channel with an
-  unknown connection count is `null`, never `0`.
-  `ShouldBroadcastNow` (synchronous) events are NOT tracked — documented
-  limitation, no non-invasive hook exists for them.
-- New Broadcast Monitoring dashboard (overview stats, live channels table
-  with optional XHR auto-refresh, per-channel detail with presence members)
-  and Authentication dashboard (overview stats + recent activity, linking
-  into the existing filtered/AJAX activities index).
-- New additive migration (`add_auth_and_broadcast_columns_to_activities_table`).
-- Explicitly confirmed NOT implemented: Notification Channel tracking
-  (mail/database notification delivery) — out of scope by design, distinct
-  from Broadcasting.
-
-### Security
-- Login-failure/throttle identifier masking never falls back to "the first
-  submitted credential" — only the explicitly configured identifier field
-  is ever read, because that credentials array also contains the plaintext
-  password.
-
-## [1.3.1] - Unreleased
+- **`count` and `exists` tracking, entirely.** These operations produced no usable audit signal because Laravel's `QueryExecuted` event does not expose the actual result, and they generated high-volume, low-value activities.
+- Notification Channel tracking (mail/database notification delivery) remains intentionally out of scope and is not implemented.
+- `ShouldBroadcastNow` synchronous broadcast events are not tracked because there is no non-invasive hook for them.
 
 ### Fixed
-- **CRITICAL: `User::find($id)` (and any retrieval of a model configured as
-  an auth provider's model) was never tracked, even when called directly
-  from application code.** Root cause: the `retrieval.exclude_auth_models`
-  exclusion added in 1.2.0 checked only the model's CLASS, which silently
-  suppressed every retrieval of that class — not just the framework-internal
-  read (a guard resolving the current user) it was meant to target. Fixed
-  by moving the check into `ActivityTrackerObserver`, where it runs
-  synchronously inside the real Eloquent `retrieved` event and inspects the
-  actual call stack for a genuine `Illuminate\Contracts\Auth\UserProvider`
-  frame — a direct `User::find($id)` has no such frame and is now tracked
-  exactly like any other model, while the auth guard's internal resolution
-  remains correctly excluded.
-- Broadcast Monitoring's live channel list is now memoized per request (was
-  being fetched from the provider up to 4 separate times per dashboard
-  render — once per independent statistic) and cached across requests for
-  `broadcast_monitoring.cache_seconds` (default 5s, configurable, `0`
-  disables caching) — the provider is never called from ordinary activity
-  tracking, only from the Broadcast Monitoring pages themselves.
-- Fixed GitHub Actions matrix incorrectly pinning only `illuminate/support`
-  to a Laravel version while leaving every other `illuminate/*` package
-  unconstrained (could resolve mismatched, invalid version combinations).
-  Now pins `orchestra/testbench` instead, which is the standard, correct
-  way to drive a Laravel package's version matrix.
+
+- Opening the dashboard or any authenticated page no longer records a spurious `retrieved` activity for the logged-in user.
+- The dashboard's internal Activity/subject/causer/statistics reads no longer generate tracking noise.
+- Direct `User::find($id)` retrievals are correctly tracked while framework-internal auth-provider retrievals remain excluded.
+- Opening the Activity Details page no longer creates spurious `retrieved`/`retrieved_many` activities for the displayed subject or causer.
+- `TrackingContext::withoutTracking()` suppression is now checked before retrieval buffering, timing, or expected-query state is recorded.
+- Authentication identifier masking no longer reveals the identifier's trailing character.
+- Broadcast Monitoring no longer performs unnecessary repeated provider lookups during a single dashboard render.
+- GitHub Actions Laravel compatibility matrix now pins `orchestra/testbench` instead of constraining only `illuminate/support`, preventing mismatched Illuminate package combinations.
+- CI now verifies Composer metadata and Laravel package auto-discovery end to end.
+
+### Security
+
+- PHP stack-trace handling is documented because default trace formatting can include literal scalar call-chain arguments; `store_trace` can be disabled for high-sensitivity applications.
+- Authentication failure/throttle identifier masking never falls back to the first submitted credential; only the explicitly configured identifier field is read because the credentials array may also contain the plaintext password.
+- Sensitive URLs, referrers, model values, query bindings, and authentication identifiers are sanitized or masked according to the relevant configuration.
+
+### Tests
+
+- Added coverage for direct `User::find()` tracking versus `EloquentUserProvider::retrieveById()` exclusion.
+- Added tests for broadcast channel-list memoization/caching and graceful fallback when the Pusher SDK is unavailable.
+- Added tests for `definedChannelPatterns()` graceful degradation.
+- Added a real request-lifecycle regression test for retrievals performed inside `TrackingContext::withoutTracking()`.
+- Added exact `maskIdentifier()` tests for emails, usernames, very short values, and single-character values.
+- Added CI validation and package auto-discovery installation tests.
+
+### Known Limitations
+
+- Several additional CI failures were reported through a screenshot whose text could not be fully and reliably extracted. The fixes above address every failure that could be root-caused with certainty from the available evidence; remaining failures require the raw CI log text for conclusive diagnosis.
+- `ShouldBroadcastNow` events are intentionally not tracked.
+- Notification Channel tracking is intentionally outside the scope of this release.
+
+---
+
+## [2.0.0] - 2025-01-13
 
 ### Added
-- `ActivityTrackerBroadcastStatisticsService::definedChannelPatterns()` —
-  best-effort listing of `Broadcast::channel(...)`-registered patterns,
-  clearly distinguished in the dashboard from live "active provider
-  channels" (never conflated).
-- CI: a `composer validate --strict` job, and a dedicated package-discovery
-  job that installs the package into a throwaway `laravel/laravel`
-  skeleton via a real Composer path repository (not Testbench's explicit
-  provider registration) to prove `composer.json`'s
-  `extra.laravel.providers` auto-discovery entry actually works end to end.
 
-### Tests
-- New regression tests proving `User::find()` is tracked directly, that an
-  actual `EloquentUserProvider::retrieveById()` call is excluded, and that
-  a non-auth model is unaffected either way.
-- New tests for broadcast channel-list memoization/caching, the Pusher
-  driver falling back to the Null monitor when the SDK isn't installed, and
-  `definedChannelPatterns()` degrading gracefully.
+- New `ActivityTrackerResource` for API responses.
+- Comprehensive exception tracking with detailed configuration.
+- Enhanced query logging with SQL, bindings, and execution time.
+- Improved device detection using `jenssegers/agent`.
+- Support for Laravel 10.
+- Type hints and return types across all classes.
+- Enum support for event types via `ActivityEventType`.
+- Better configuration structure for authentication, models, and exceptions.
 
-## [1.7.0] - Unreleased
+### Changed
+
+- Improved configuration structure with nested settings.
+- Enhanced model tracking with before/after state capture.
+- Optimized database schema.
+- Refactored service classes for better separation of concerns.
+- Improved error handling and logging.
+- Better handling of query parameters and headers.
 
 ### Fixed
-- **CRITICAL: opening the Activity Details page (or any other
-  `withoutTracking()`-wrapped package operation) created a spurious
-  `retrieved`/`retrieved_many` activity for the subject/causer model being
-  displayed.** Root cause: `retrieved`/`retrieved_many` are buffered and
-  only actually checked against `shouldTrack()` later, when
-  `ActivityTrackerRetrievalFlusher` flushes the buffer at the end of the
-  request — by which point a `withoutTracking()` block used earlier in that
-  same request had already exited and correctly restored tracking, so a
-  suppression check made only at flush time could never see that the
-  retrieval had originally happened while suppressed.
-  `ActivityTrackerQueryListener` already guarded against this correctly
-  (checking suppression at the top, before doing anything); this brings
-  `ActivityTrackerObserver` in line with it by checking suppression before
-  any buffering, timer, or expected-query state is recorded — not deferred.
-  This is the same class of bug as the `User::find()` fix in 1.3.1 (a
-  decision made too late, after the context needed to make it correctly
-  had already been lost) and is fixed the same way: moved earlier, to where
-  the real state still exists.
-- **`maskIdentifier()` revealed the identifier's trailing character**
-  (`ahmed@example.com` -> `a***d@example.com`), inconsistent with the
-  documented/tested `a***@example.com`. Simplified to a fixed-length mask
-  that never reveals the trailing character or the original length.
-- Removed `pusher/pusher-php-server` from `require-dev` (kept only in
-  `suggest`) — it was defeating the test that verifies the Null monitor
-  fallback when the SDK is *not* installed, by installing the SDK during
-  every CI run.
-- `ActivityTrackerBroadcastTracker`'s channel/event extraction is more
-  resilient to Laravel's internal queued-command shape changing across
-  versions: falls back to scanning the unserialized command's public
-  properties for a broadcastable object if the expected `$event` property
-  isn't present, rather than only supporting one exact shape.
 
-### Tests
-- New regression test that performs a REAL Eloquent retrieval inside
-  `TrackingContext::withoutTracking()` and flushes the buffer afterward
-  (mirroring the actual request lifecycle) — the previous test for this
-  called `logModelEvent()` directly, which bypasses the buffering path
-  entirely and could not have caught this bug.
-- New unit tests locking in `maskIdentifier()`'s exact output for emails,
-  plain usernames, very short values, and single characters.
+- Fixed issues with model event tracking.
+- Improved handling of null values in JSON columns.
+- Better error handling in the activity logger.
+- Fixed inconsistencies in event naming.
+- Improved type safety throughout the package.
 
-### Known limitations of this fix round
-- Several additional CI failures were reported via a screenshot whose text
-  could not be fully and reliably extracted; the fixes above address every
-  failure that could be root-caused with certainty from the visible
-  evidence, cross-referenced against the actual code. See the chat response
-  for the full list and for what still needs the raw CI log text to
-  diagnose conclusively.
+### Security
+
+- Enhanced sensitive data filtering.
+- Improved configuration for excluding sensitive model attributes.
+- Better request-data sanitization.
+
+### Dependencies
+
+- Updated minimum PHP version requirement to 7.4.
+- Added support for Laravel 9 and 10.
+- Updated `jenssegers/agent` to version 2.6.
+
+### Documentation
+
+- Completely rewritten documentation.
+- Added comprehensive configuration examples.
+- Improved installation instructions.
+- Added better examples for common use cases.
+
+### Breaking Changes
+
+- Removed helper functions in favor of the facade.
+- Changed the database table name.
+- Modified the database schema.
+- Updated the configuration structure.
+
+### Migration Guide from 1.x to 2.0
+
+1. Run the new migration to update the table structure.
+2. Some JSON columns have been optimized.
+3. Publish the new configuration file:
+
+```bash
+php artisan vendor:publish --provider="Abdulbaset\ActivityTracker\Providers\ActivityTrackerServiceProvider"
+```
+
+4. Update the environment variables:
+
+```env
+ACTIVITY_TRACKER_ENABLED=true
+ACTIVITY_TRACKER_LOG_METHOD=database
+ACTIVITY_TRACKER_LOG_FILE_PATH=storage/logs/activity_tracker.log
+```
+
+---
+
+## [1.0.0] - 2024-07-27
+
+### Added
+
+- Initial release of the Activity Tracker package for Laravel.
+- Activity logging for model creation, updates, deletions, and retrievals.
+- Additional activity context including user ID, IP address, device type, browser information, and other request details.
+- Direct activity logging through the `ActivityTracker` facade.
+- Support for logging custom events.
+- `ActivityTrackerTrait` for tracking model activity directly from models.
+- Observer-based automatic activity tracking.
+- Support for custom observers.
+- Configurable logging to database or file.
+- Configurable activity log table and log file path.
+- Configurable logging of model changes and authentication login/logout events.
+- Migration support for creating and updating the activity log table.
+- Support for logging old and new model values.
+- Support for visited/retrieved events.
+- Flexible integration through facade, trait, observers, or custom observers.
+- Support for Laravel applications with configurable package settings.
+
+### Documentation
+
+- Installation and Composer usage documentation.
+- Configuration examples.
+- Migration commands for install, rollback, and refresh.
+- Usage examples for direct facade logging, traits, observers, and custom observers.
+- Examples for controller-based activity logging.
+- Basic package feature and integration documentation.
+
+---
+
+## Versioning Notes
+
+- `1.0.0` — Initial public release.
+- `2.0.0` — Major redesign and feature expansion released on January 13, 2025.
+- `3.0.0` — Upcoming major release consolidating the latest development work that was previously split into multiple unreleased entries.
+
+[3.0.0]: https://github.com/AbdulbasetRS/Activity-Tracker/releases/tag/v3.0.0
+[2.0.0]: https://github.com/AbdulbasetRS/Activity-Tracker/releases/tag/v2.0.0
+[1.0.0]: https://github.com/AbdulbasetRS/Activity-Tracker/releases/tag/v1.0.0
