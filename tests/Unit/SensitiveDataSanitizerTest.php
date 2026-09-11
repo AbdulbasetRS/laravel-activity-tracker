@@ -49,4 +49,33 @@ final class SensitiveDataSanitizerTest extends TestCase
         $this->assertSame('***REDACTED***', $result[1]);
         $this->assertSame(42, $result[2]);
     }
+
+    public function test_it_masks_an_email_identifier(): void
+    {
+        $sanitizer = new SensitiveDataSanitizer([]);
+
+        $this->assertSame('a***@example.com', $sanitizer->maskIdentifier('ahmed@example.com'));
+    }
+
+    public function test_it_masks_a_plain_username_identifier(): void
+    {
+        $sanitizer = new SensitiveDataSanitizer([]);
+
+        $this->assertSame('a***', $sanitizer->maskIdentifier('ahmed123'));
+    }
+
+    public function test_it_never_reveals_the_original_length_or_trailing_character(): void
+    {
+        $sanitizer = new SensitiveDataSanitizer([]);
+
+        $this->assertSame('a***', $sanitizer->maskIdentifier('ab'));
+        $this->assertSame('a***', $sanitizer->maskIdentifier('averylongusername'));
+    }
+
+    public function test_it_handles_a_single_character_identifier(): void
+    {
+        $sanitizer = new SensitiveDataSanitizer([]);
+
+        $this->assertSame('*', $sanitizer->maskIdentifier('a'));
+    }
 }

@@ -133,14 +133,44 @@ final class ActivityTrackerBroadcastTracker
 
             $command = @unserialize($serializedCommand);
 
-            if (! $command instanceof BroadcastEvent) {
+            if (! is_object($command)) {
                 return null;
             }
 
-            return is_object($command->event) ? $command->event : null;
+            // The expected case: the unserialized command IS the
+            // BroadcastEvent job, with the actual broadcastable on its
+            // public $event property (this matches Laravel's own internal
+            // shape as of this writing).
+            if ($command instanceof BroadcastEvent && is_object($command->event ?? null)) {
+                return $command->event;
+            }
+
+            // Defensive fallback for a future Laravel version that renames
+            // or restructures this property: if the unserialized command
+            // itself is already broadcastable, use it directly; otherwise
+            // scan its public properties for anything that looks like a
+            // broadcastable object. Never throws — an unmatched shape
+            // simply yields no per-channel detail (see the "$channels ===
+            // []" branch in record()), not a broken worker.
+            if ($this->looksBroadcastable($command)) {
+                return $command;
+            }
+
+            foreach (get_object_vars($command) as $value) {
+                if (is_object($value) && $this->looksBroadcastable($value)) {
+                    return $value;
+                }
+            }
+
+            return null;
         } catch (Throwable) {
             return null;
         }
+    }
+
+    private function looksBroadcastable(object $value): bool
+    {
+        return method_exists($value, 'broadcastOn');
     }
 
     private function eventNameFor(?object $broadcastable): ?string

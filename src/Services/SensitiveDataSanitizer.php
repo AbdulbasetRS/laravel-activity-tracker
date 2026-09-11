@@ -148,10 +148,9 @@ final class SensitiveDataSanitizer implements SensitiveDataSanitizerInterface
             return str_repeat('*', max(1, $length));
         }
 
-        if ($length <= 3) {
-            return mb_substr($value, 0, 1).str_repeat('*', $length - 1);
-        }
-
-        return mb_substr($value, 0, 1).'***'.mb_substr($value, -1);
+        // Fixed-length mask (always exactly "***", never revealing the
+        // trailing character or the original length) — deliberately
+        // simpler and more private than a length-dependent reveal.
+        return mb_substr($value, 0, 1).'***';
     }
 }

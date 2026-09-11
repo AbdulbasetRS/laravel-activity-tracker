@@ -381,7 +381,7 @@ route_name: admin.users.show   (بيانات ثانوية، لسه بتتسجل)
 
 ```
 ahmed@example.com  ->  a***@example.com
-ahmed123           ->  a***3
+ahmed123           ->  a***
 ```
 
 ## مراقبة الـ Broadcast

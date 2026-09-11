@@ -574,7 +574,7 @@ password. The identifier is always masked before storage:
 
 ```
 ahmed@example.com  ->  a***@example.com
-ahmed123           ->  a***3
+ahmed123           ->  a***
 ```
 
 ## Broadcast monitoring

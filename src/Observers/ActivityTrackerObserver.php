@@ -73,6 +73,26 @@ final class ActivityTrackerObserver
      */
     public function handle(string $eventName, array $payload): void
     {
+        // ROOT CAUSE FIX: opening the Activity Details page (or any other
+        // package-internal operation wrapped in withoutTracking()) was
+        // creating a spurious "retrieved"/"retrieved_many" activity for
+        // the subject/causer model being displayed. Retrievals are
+        // buffered and only actually checked against shouldTrack() much
+        // later, when RetrievalFlusher flushes the buffer at the end of
+        // the request — by which point withoutTracking()'s suppression
+        // window has already closed and correctly restored itself, so a
+        // check made only at flush time can never see that the retrieval
+        // originally happened while suppressed. This method is the only
+        // place with access to the real, current suppression state at the
+        // moment the retrieval actually happens, so it must be checked
+        // HERE — before any buffering, timer, or expected-query state is
+        // recorded — not deferred to later. (ActivityTrackerQueryListener
+        // already does this correctly for the same reason; this brings
+        // the Eloquent side in line with it.)
+        if ($this->trackingContext->isSuppressed()) {
+            return;
+        }
+
         [$hook, ] = $this->parseEventName($eventName);
 
         if ($hook === null) {
@@ -322,11 +342,7 @@ final class ActivityTrackerObserver
      */
     private function isForceDeleting(Model $model): bool
     {
-        if (! method_exists($model, 'isForceDeleting')) {
-            return false;
-        }
-
-        return $model->isForceDeleting();
+        return property_exists($model, 'forceDeleting') && $model->forceDeleting === true;
     }
 
     /**

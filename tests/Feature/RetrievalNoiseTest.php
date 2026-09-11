@@ -151,6 +151,42 @@ final class RetrievalNoiseTest extends TestCase
         $this->assertSame(0, Activity::query()->count());
     }
 
+    /**
+     * THE ACTUAL BUG: opening the Activity Details page was creating a
+     * spurious "retrieved" activity for the subject/causer being
+     * displayed, even though that lookup happens inside
+     * withoutTracking(). Root cause: "retrieved" is buffered and only
+     * checked against shouldTrack() later, when RetrievalFlusher flushes
+     * at the end of the request — by which point withoutTracking()'s
+     * suppression window had already closed normally, so a suppression
+     * check made only at flush time could never see that the retrieval
+     * originally happened while suppressed. Fixed by checking suppression
+     * inside ActivityTrackerObserver::handle() itself, before buffering —
+     * this test calls the flusher AFTER the withoutTracking() block has
+     * already exited, exactly like the real request lifecycle does, to
+     * prove the fix actually holds (a test that flushes DURING
+     * withoutTracking(), or that calls logModelEvent() directly instead
+     * of performing a real retrieval, would not catch this bug at all).
+     */
+    public function test_a_real_retrieval_inside_without_tracking_produces_no_activity_even_when_flushed_afterward(): void
+    {
+        $post = TestPost::create(['title' => 'Subject of the page']);
+        Activity::query()->truncate();
+
+        $context = $this->app->make(\Abdulbaset\ActivityTracker\Support\TrackingContext::class);
+
+        $context->withoutTracking(function () use ($post) {
+            TestPost::find($post->id);
+        });
+
+        // Exactly like the real request lifecycle: the flush happens after
+        // withoutTracking() has already exited and restored suppression.
+        $this->assertFalse($context->isSuppressed());
+        $this->app->make(ActivityTrackerRetrievalFlusher::class)->flush();
+
+        $this->assertSame(0, Activity::query()->where('subject_type', TestPost::class)->count());
+    }
+
     public function test_without_tracking_suppresses_reads_and_restores_afterward(): void
     {
         $context = $this->app->make(\Abdulbaset\ActivityTracker\Support\TrackingContext::class);

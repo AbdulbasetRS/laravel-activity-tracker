@@ -217,3 +217,55 @@ All notable changes to `abdulbaset/activity-tracker` will be documented here.
 - New tests for broadcast channel-list memoization/caching, the Pusher
   driver falling back to the Null monitor when the SDK isn't installed, and
   `definedChannelPatterns()` degrading gracefully.
+
+## [1.3.2] - Unreleased
+
+### Fixed
+- **CRITICAL: opening the Activity Details page (or any other
+  `withoutTracking()`-wrapped package operation) created a spurious
+  `retrieved`/`retrieved_many` activity for the subject/causer model being
+  displayed.** Root cause: `retrieved`/`retrieved_many` are buffered and
+  only actually checked against `shouldTrack()` later, when
+  `ActivityTrackerRetrievalFlusher` flushes the buffer at the end of the
+  request — by which point a `withoutTracking()` block used earlier in that
+  same request had already exited and correctly restored tracking, so a
+  suppression check made only at flush time could never see that the
+  retrieval had originally happened while suppressed.
+  `ActivityTrackerQueryListener` already guarded against this correctly
+  (checking suppression at the top, before doing anything); this brings
+  `ActivityTrackerObserver` in line with it by checking suppression before
+  any buffering, timer, or expected-query state is recorded — not deferred.
+  This is the same class of bug as the `User::find()` fix in 1.3.1 (a
+  decision made too late, after the context needed to make it correctly
+  had already been lost) and is fixed the same way: moved earlier, to where
+  the real state still exists.
+- **`maskIdentifier()` revealed the identifier's trailing character**
+  (`ahmed@example.com` -> `a***d@example.com`), inconsistent with the
+  documented/tested `a***@example.com`. Simplified to a fixed-length mask
+  that never reveals the trailing character or the original length.
+- Removed `pusher/pusher-php-server` from `require-dev` (kept only in
+  `suggest`) — it was defeating the test that verifies the Null monitor
+  fallback when the SDK is *not* installed, by installing the SDK during
+  every CI run.
+- `ActivityTrackerBroadcastTracker`'s channel/event extraction is more
+  resilient to Laravel's internal queued-command shape changing across
+  versions: falls back to scanning the unserialized command's public
+  properties for a broadcastable object if the expected `$event` property
+  isn't present, rather than only supporting one exact shape.
+
+### Tests
+- New regression test that performs a REAL Eloquent retrieval inside
+  `TrackingContext::withoutTracking()` and flushes the buffer afterward
+  (mirroring the actual request lifecycle) — the previous test for this
+  called `logModelEvent()` directly, which bypasses the buffering path
+  entirely and could not have caught this bug.
+- New unit tests locking in `maskIdentifier()`'s exact output for emails,
+  plain usernames, very short values, and single characters.
+
+### Known limitations of this fix round
+- Several additional CI failures were reported via a screenshot whose text
+  could not be fully and reliably extracted; the fixes above address every
+  failure that could be root-caused with certainty from the visible
+  evidence, cross-referenced against the actual code. See the chat response
+  for the full list and for what still needs the raw CI log text to
+  diagnose conclusively.
